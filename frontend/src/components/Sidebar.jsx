@@ -1,7 +1,8 @@
 import FileUpload from "./FileUpload";
 import SessionList from "./SessionList";
 
-export default function Sidebar({ refreshKey, onSessionDeleted }) {
+export default function Sidebar(props) {
+  const { refreshKey, onSessionDeleted } = props;
   return (
     <aside className="sidebar">
       <div className="sidebar-header">

@@ -65,6 +65,7 @@ def embedding_chunks(json):
         inputs=chunks,
         parameters={"input_type": "passage", "truncate": "END"}
     )
+    
 
     records = []
     for chunk, de, se in zip(chunks, dense_embeddings, sparse_embeddings):

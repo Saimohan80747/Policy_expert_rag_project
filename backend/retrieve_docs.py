@@ -13,10 +13,7 @@ pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 
 def retrieve_documents(query: str):
     start = time.time()
-    result={
-        "query": query,
-        "retrieved_documents": [],
-    }
+  
    
     index_name = "hybrid-index"
     index = pc.Index(index_name)
@@ -55,8 +52,5 @@ def retrieve_documents(query: str):
             "file_url": match.metadata.get("file_url", None),
             "file_name": match.metadata.get("file_name", None)
         })
-
-    print(retrieved_documents)
     
-    result["retrieved_documents"] = retrieved_documents
-    return result
+    return retrieved_documents

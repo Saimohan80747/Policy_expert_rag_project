@@ -183,7 +183,7 @@ def extract_text(json):
         file_metadata["processing_time"] = round(time.time() - start, 4)
         file_metadata["processed_at"] = datetime.now().isoformat()
 
-        return result
+        return result.get("text", "No text extracted")
 
     except Exception as e:
 

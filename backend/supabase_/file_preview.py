@@ -4,6 +4,7 @@ BUCKET = "documents"
 import os
 import tempfile
 
+
 def preview_file(file_name: str):
     file_bytes = (
         supabase_var.storage
