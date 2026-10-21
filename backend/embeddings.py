@@ -36,7 +36,7 @@ def embedding_chunks(json):
 
     
 
-    hybrid_index_name = "hybrid-index"
+    hybrid_index_name = "hannish-index"
 
     if not pc.has_index(hybrid_index_name):
         pc.create_index(
