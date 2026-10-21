@@ -71,6 +71,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```powershell
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python -m spacy download en_core_web_sm
 ```
 
 ### 4. Configure environment variables

@@ -8,12 +8,15 @@ langchain
 langchain-core
 langchain-text-splitters
 langchain-ollama
+ollama
 
 sentence-transformers
 scikit-learn
 numpy
+spacy
 
 pinecone
+neo4j
 
 cohere
 
@@ -26,4 +29,3 @@ supabase
 
 streamlit
 requests
-
