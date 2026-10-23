@@ -17,6 +17,8 @@ class _Result:
 
 
 class _Query:
+    reject_sources_column = False
+
     def __init__(self, rows):
         self.rows, self.filters, self.mode = rows, [], "select"
         self.payload, self._order, self._limit = None, None, None
@@ -60,6 +62,8 @@ class _Query:
     def execute(self):
         match = [r for r in self.rows if all(f(r) for f in self.filters)]
         if self.mode == "insert":
+            if self.reject_sources_column and "sources" in self.payload:
+                raise RuntimeError("PGRST204: Could not find the 'sources' column")
             row = dict(self.payload)
             row.setdefault("id", len(self.rows) + 1)
             row.setdefault("created_at", len(self.rows) + 1)
@@ -91,6 +95,11 @@ class _Bucket:
     def get_public_url(self, path):
         return f"https://fake.storage/documents/{path}"
 
+    def download(self, path):
+        if path not in self.files:
+            raise RuntimeError("Object not found")
+        return self.files[path]
+
     def remove(self, paths):
         for p in paths:
             self.files.pop(p, None)
@@ -102,10 +111,13 @@ class FakeSupabase:
         self.tables = {}
         self.files = {}
         self.fail_upload = False
+        self.reject_sources_column = False
         self.storage = SimpleNamespace(from_=lambda _bucket: _Bucket(self.files, self.fail_upload))
 
     def table(self, name):
-        return _Query(self.tables.setdefault(name, []))
+        query = _Query(self.tables.setdefault(name, []))
+        query.reject_sources_column = self.reject_sources_column
+        return query
 
 
 # ----------------------------- fake Pinecone -----------------------------

@@ -117,3 +117,38 @@ def test_llm_retries_transient_errors_only(monkeypatch):
     with pytest.raises(errors.ClientError):
         llm._with_retry(rejected)
     assert len(bad) == 1
+
+
+def test_sources_are_saved_with_each_message(env, fake_llm):
+    import api
+
+    seed()
+    client = TestClient(api.app)
+    sid = client.post("/prompt", json={"question": "How many casual leave days?"}).json()["session_id"]
+    (message,) = client.get(f"/sessions/{sid}").json()["session"]
+    assert message["sources"][0]["file_name"] == "leave.txt"
+
+
+def test_chat_is_still_saved_if_the_sources_column_is_missing(env, fake_llm):
+    import api
+
+    seed()
+    env.supabase.reject_sources_column = True
+    client = TestClient(api.app)
+    sid = client.post("/prompt", json={"question": "How many casual leave days?"}).json()["session_id"]
+    (message,) = client.get(f"/sessions/{sid}").json()["session"]
+    assert message["answer"] == fake_llm.text and "sources" not in message
+
+
+def test_preview_extracts_text_from_any_supported_type(env):
+    import api
+
+    client = TestClient(api.app)
+    for name, data in {
+        "notes.txt": b"Remote work needs approval.",
+        "people.csv": b"Name,City\nAsha,Pune\n",
+    }.items():
+        ingest_file(UploadFile(filename=name, file=io.BytesIO(data)))
+    assert "Remote work needs approval." in client.get("/preview/notes.txt").json()["text"]
+    assert "Name: Asha | City: Pune" in client.get("/preview/people.csv").json()["text"]
+    assert client.get("/preview/missing.txt").status_code == 404

@@ -1,5 +1,6 @@
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ingestion import ingest_file
@@ -19,13 +20,33 @@ app = FastAPI(
     version="1.2.0",
 )
 
+ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    """Return unexpected errors as JSON *with* CORS headers.
+
+    Starlette runs this outside the CORS middleware, so without the header the browser
+    reports a misleading "blocked by CORS policy" instead of the real error.
+    """
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin in ALLOWED_ORIGINS:
+        headers = {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true"}
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {exc}"},
+        headers=headers,
+    )
 
 
 class PromptRequest(BaseModel):
@@ -87,6 +108,7 @@ def prompt(request: PromptRequest):
         answer=result["answer"],
         file_name=result["file_name"],
         file_url=result["file_url"],
+        sources=result["sources"],
     )
 
     return {

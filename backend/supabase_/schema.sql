@@ -31,4 +31,7 @@ alter table documents add column if not exists chunk_count int;
 create index if not exists documents_doc_id_idx on documents(doc_id);
 create index if not exists documents_file_name_idx on documents(file_name);
 
+-- Chat: keep the sources shown with each answer.
+alter table chat_messages add column if not exists sources jsonb default '[]'::jsonb;
+
 -- Storage: create a public bucket named "documents" in the Storage tab.

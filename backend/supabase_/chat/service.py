@@ -1,6 +1,5 @@
-
-from .session import create_session
 from .message import save_chat
+from .session import create_session
 from .title import generate_title
 
 
@@ -10,25 +9,20 @@ def process_chat(
     answer: str,
     file_name: str | None = None,
     file_url: str | None = None,
+    sources: list | None = None,
 ):
-    """
-    Creates a new session if needed and saves the chat.
-    Returns the session_id.
-    """
-
-    # First message of a new chat
-    if not session_id :
-        title_ = generate_title(question, answer)
-        session = create_session(title=title_)
+    """Create a session if needed, save the Q&A, and return the session id."""
+    if not session_id:  # first message of a new chat
+        session = create_session(title=generate_title(question, answer))
         session_id = session["id"]
-    
-    # Save question & answer
+
     save_chat(
         session_id=session_id,
         question=question,
         answer=answer,
         file_name=file_name,
         file_url=file_url,
+        sources=sources,
     )
 
     return session_id
