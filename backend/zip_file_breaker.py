@@ -1,51 +1,97 @@
 import os
-import tempfile
-from zipfile import ZipFile
+import zipfile
+from io import BytesIO
+
 from fastapi import UploadFile
 
-def zip_file_breaker(zip_upload: UploadFile, pipeline):
-    uploaded_files = []
-    duplicate_files = []
-    failed_files = []
+from app_config import MAX_ZIP_DEPTH, MAX_ZIP_UNCOMPRESSED_BYTES
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        with ZipFile(zip_upload.file, "r") as zip_ref:
-            zip_ref.extractall(temp_dir)
 
-        for root, _, files in os.walk(temp_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
+def _is_junk(name: str) -> bool:
+    base = os.path.basename(name)
+    return (
+        name.endswith("/")
+        or "__MACOSX/" in name
+        or base.startswith((".", "~$"))
+        or base == "Thumbs.db"
+    )
 
-                try:
-                    with open(file_path, "rb") as f:
-                        upload_file = UploadFile(
-                            filename=file,
-                            file=f
-                        )
-                            
-                        upload_file.file.seek(0)
-                        result = pipeline.run(upload_file)
 
-                        if(result.get("status", "") == "duplicate"):
-                            duplicate_files.append({
-                                "filename": file,
-                                "result": result
-                            })
+def zip_file_breaker(zip_upload, ingest, depth=0):
+    """Ingest every file inside a ZIP (nested ZIPs up to MAX_ZIP_DEPTH).
 
-                        else:
-                            uploaded_files.append({
-                                "filename": file,
-                                "result": result
-                            })
+    `ingest` takes an UploadFile and returns a result dict with a 'status'.
+    Files are read in memory and never written to disk, so member paths cannot
+    escape anywhere.
+    """
+    ingested, duplicates, failed, skipped = [], [], [], []
 
-                except Exception as e:
-                    failed_files.append({
-                        "filename": file,
-                        "error": str(e)
-                    })
+    def record(name, result):
+        entry = {"filename": name, "result": result}
+        status = result.get("status")
+        if status == "duplicate":
+            duplicates.append(entry)
+        elif status == "failed":
+            failed.append(entry)
+        else:
+            ingested.append(entry)
+
+    zip_upload.file.seek(0)
+    # Copy into memory: on older Pythons SpooledTemporaryFile has no `seekable`, which zipfile needs.
+    raw = zip_upload.file.read()
+    try:
+        archive = zipfile.ZipFile(BytesIO(raw))
+    except (zipfile.BadZipFile, OSError, ValueError) as exc:
+        return {
+            "ingested_files": [],
+            "duplicate_files": [],
+            "failed_files": [
+                {"filename": zip_upload.filename, "error": f"Not a valid ZIP file ({type(exc).__name__}: {exc})."}
+            ],
+            "skipped_files": [],
+        }
+
+    with archive:
+        total = sum(info.file_size for info in archive.infolist())
+        if total > MAX_ZIP_UNCOMPRESSED_BYTES:
+            return {
+                "ingested_files": [],
+                "duplicate_files": [],
+                "failed_files": [
+                    {
+                        "filename": zip_upload.filename,
+                        "error": f"Archive expands to {total} bytes, over the {MAX_ZIP_UNCOMPRESSED_BYTES} byte limit.",
+                    }
+                ],
+                "skipped_files": [],
+            }
+
+        for info in archive.infolist():
+            name = info.filename
+            if _is_junk(name):
+                continue
+            base = os.path.basename(name)
+            try:
+                data = archive.read(info)
+                upload = UploadFile(filename=base, file=BytesIO(data))
+
+                if base.lower().endswith(".zip"):
+                    if depth + 1 >= MAX_ZIP_DEPTH:
+                        skipped.append({"filename": name, "reason": "ZIP nested too deeply."})
+                        continue
+                    nested = zip_file_breaker(upload, ingest, depth + 1)
+                    ingested.extend(nested["ingested_files"])
+                    duplicates.extend(nested["duplicate_files"])
+                    failed.extend(nested["failed_files"])
+                    skipped.extend(nested["skipped_files"])
+                else:
+                    record(name, ingest(upload))
+            except Exception as exc:  # noqa: BLE001 - one bad member must not stop the rest
+                failed.append({"filename": name, "error": f"{type(exc).__name__}: {exc}"})
 
     return {
-        "uploaded_files": uploaded_files,
-        "duplicate_files": duplicate_files,
-        "failed_files": failed_files
+        "ingested_files": ingested,
+        "duplicate_files": duplicates,
+        "failed_files": failed,
+        "skipped_files": skipped,
     }

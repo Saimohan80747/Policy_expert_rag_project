@@ -1,4 +1,7 @@
-import fitz  # PyM
+try:  # newer PyMuPDF exposes `pymupdf`; older exposes `fitz`
+    import pymupdf as fitz
+except ImportError:
+    import fitz
 from .supabase_db import supabase_var
 BUCKET = "documents"
 import os

@@ -4,28 +4,16 @@ pydantic
 python-dotenv
 python-multipart
 
-langchain
-langchain-core
 langchain-text-splitters
-langchain-ollama
-ollama
-
-sentence-transformers
-scikit-learn
-numpy
-spacy
 
 pinecone
 neo4j
-
 cohere
+google-genai
 
 pandas
 openpyxl
-python-docx
+python-docx>=1.1
 PyMuPDF
 
 supabase
-
-streamlit
-requests
