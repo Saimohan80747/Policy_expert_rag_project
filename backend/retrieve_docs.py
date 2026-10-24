@@ -72,7 +72,7 @@ def retrieve_documents(query: str, top_k: int = 8, alpha: float = 0.6, current_o
                 "file_url": meta.get("file_url"),
                 "doc_id": meta.get("doc_id"),
                 "version": int(version) if version is not None else None,
-                "chunk_index": meta.get("chunk_index"),
+                "chunk_index": int(meta["chunk_index"]) if meta.get("chunk_index") is not None else None,
             }
         )
     return _drop_superseded(results) if current_only else results

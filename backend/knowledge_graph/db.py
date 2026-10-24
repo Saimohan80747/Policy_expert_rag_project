@@ -37,6 +37,21 @@ def run(query: str, **params) -> list[dict]:
         return session.run(query, params).data()
 
 
+def run_read(query: str, params: dict | None = None, limit: int = 50, timeout: float = 15) -> list[dict]:
+    """Run a query in a READ transaction (the server rejects writes) with a time and row limit."""
+    import itertools
+
+    from neo4j import unit_of_work
+
+    @unit_of_work(timeout=timeout)  # transaction timeout; Query(timeout=...) only works with session.run
+    def work(tx):
+        result = tx.run(query, params or {})
+        return [record.data() for record in itertools.islice(result, limit)]
+
+    with get_driver().session() as session:
+        return session.execute_read(work)
+
+
 def close_driver():
     global _driver
     if _driver is not None:

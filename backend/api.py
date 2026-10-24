@@ -120,6 +120,7 @@ def prompt(request: PromptRequest):
         "route": result["route"],
         "route_used": result["route_used"],
         "standalone_question": result["standalone_question"],
+        "graph_debug": result.get("graph_debug"),
     }
 
 

@@ -31,6 +31,20 @@ MAX_ZIP_DEPTH = 3
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 GEMINI_ANSWER_MODEL = os.getenv("GEMINI_ANSWER_MODEL", "gemini-3.8-flash")
 
+# --- Graph retrieval ---------------------------------------------------------
+CYPHER_MODEL = os.getenv("GEMINI_CYPHER_MODEL", GEMINI_ANSWER_MODEL)
+GRAPH_MAX_ROWS = 50
+GRAPH_QUERY_TIMEOUT = 15      # seconds
+GRAPH_MAX_ATTEMPTS = 2        # query generation attempts (the second one sees the first one's error)
+
+# --- Retrieval upgrade ---------------------------------------------------------
+GRAPH_CHUNK_CANDIDATES = 10   # chunks that mention the linked entities, added to the vector candidates
+GRAPH_CHUNK_WEIGHT = 0.5      # RRF weight of that list relative to vector search (1.0)
+RERANK_CANDIDATES = 20        # vector candidates to rerank (only when a Cohere key is set)
+COHERE_RERANK_MODEL = os.getenv("COHERE_RERANK_MODEL", "rerank-v3.5")
+RERANK_PER_MINUTE = 8         # Cohere trial allows 10/min; stay under it
+RERANK_MONTHLY_LIMIT = 900    # trial allows ~1,000 API calls/month
+
 # --- Chat -------------------------------------------------------------------
 RETRIEVE_TOP_K = 8
 HISTORY_TURNS = 4          # previous Q/A pairs used to resolve follow-up questions

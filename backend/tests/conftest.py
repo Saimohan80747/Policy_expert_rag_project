@@ -243,6 +243,7 @@ class FakeLLM:
         self.analysis = {"standalone_question": "How many casual leave days per year?", "route": "vanilla", "entities": []}
         self.fail_json = False
         self.fail_text = False
+        self.cypher = []          # queue of Cypher strings returned for CypherQuery requests
 
     @property
     def kinds(self):
@@ -258,7 +259,9 @@ class FakeLLM:
         self.calls.append(("json", model, prompt, system))
         if self.fail_json:
             raise RuntimeError("llm down")
-        return schema(**self.analysis)
+        if schema.__name__ == "CypherQuery":
+            return schema(cypher=self.cypher.pop(0) if len(self.cypher) > 1 else self.cypher[0])
+        return schema(**{"asks_individual_pay": False, **self.analysis})
 
 
 @pytest.fixture
@@ -290,8 +293,16 @@ ALIASES = [
 class FakeGraph:
     def __init__(self):
         self.calls = []
+        self.read_calls = []
         self.documents = {"ADR-0040"}
         self.fail = False
+        self.loaded = True                       # is the domain graph loaded (GraphMeta present)?
+        self.entities = {"Person:LS00433": ("Harini Subramanyam", "Person"),
+                         "Client:CL-001": ("Deccan Freight Logistics", "Client")}
+        self.exact = {}                          # normalised surface -> rows
+        self.fuzzy = []
+        self.chunk_rows = []                     # rows for the entity-anchored chunk query
+        self.read_results = [[]]                 # queue: a list of rows, or an Exception to raise
         self.alias_rows = [
             {"norm": n, "alias": a, "alias_type": t, "ambiguous": amb, "uid": u, "label": lab}
             for n, a, t, amb, u, lab in ALIASES
@@ -303,9 +314,37 @@ class FakeGraph:
             raise RuntimeError("neo4j down")
         if "RETURN a.norm" in query:
             return self.alias_rows
+        if "RETURN c.cid AS cid" in query:
+            return self.chunk_rows
         if "RETURN x.id" in query:
             return [{"id": c} for c in params["cands"] if c in self.documents]
+        if "GraphMeta {name: 'domain'}" in query:
+            return [{"as_of": "2026-09-30"}] if self.loaded else []
+        if "{norm: $norm}" in query:
+            return self.exact.get(params["norm"], [])
+        if "queryNodes" in query:
+            return self.fuzzy
+        if "WHERE e.uid IN $uids" in query:
+            return [{"uid": u, "name": self.entities[u][0], "label": self.entities[u][1]}
+                    for u in params["uids"] if u in self.entities]
+        if "UNWIND k AS key WITH label" in query:
+            return [{"label": "Person", "keys": ["uid", "id", "name", "status"]},
+                    {"label": "Client", "keys": ["uid", "id", "name", "tier"]}]
+        if "RETURN src, rel, dst" in query:
+            return [{"src": "Person", "rel": "ACCOUNT_MANAGER_OF", "dst": "Client", "n": 5},
+                    {"src": "Person", "rel": "REPORTS_TO", "dst": "Person", "n": 9},
+                    {"src": "Person", "rel": "EARNS", "dst": "Level", "n": 9}]
+        if "WITH rel, collect" in query:
+            return [{"rel": "REPORTS_TO", "keys": ["eid", "valid_from", "valid_to"]},
+                    {"rel": "EARNS", "keys": ["base_amount"]}]
         return []
+
+    def run_read(self, query, params=None, limit=50, timeout=15):
+        self.read_calls.append(query)
+        result = self.read_results.pop(0) if len(self.read_results) > 1 else self.read_results[0]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     def queries(self, needle):
         return [(q, p) for q, p in self.calls if needle in q]
@@ -314,15 +353,21 @@ class FakeGraph:
 @pytest.fixture(autouse=True)
 def no_real_graph(monkeypatch):
     """Tests must never reach a real Neo4j, even when backend/.env has credentials."""
-    from knowledge_graph import db, gazetteer
+    import graph_retrieval
+    from knowledge_graph import db, gazetteer, text2cypher
 
     def not_configured():
         raise db.GraphNotConfigured("tests run without Neo4j")
 
+    def reset():
+        gazetteer.reset_cache()
+        text2cypher.reset_schema_cache()
+        graph_retrieval.reset_ready_cache()
+
     monkeypatch.setattr(db, "get_driver", not_configured)
-    gazetteer.reset_cache()
+    reset()
     yield
-    gazetteer.reset_cache()
+    reset()
 
 
 @pytest.fixture
@@ -331,4 +376,5 @@ def fake_graph(monkeypatch):
 
     fake = FakeGraph()
     monkeypatch.setattr(db, "run", fake.run)
+    monkeypatch.setattr(db, "run_read", fake.run_read)
     return fake
