@@ -103,6 +103,15 @@ python tools/upload_folder.py C:\company_corpus\corpus\wave_0_initial           
 
 Safe to re-run: duplicates are skipped and changed files become new versions. Results are logged to `upload_log.jsonl`. `python tools/cleanup_zip_members.py` previews old-style zip member names; add `--yes` to delete them.
 
+### Hide replaced document versions
+
+The corpus's `_meta` sidecars say which document supersedes which (e.g. Leave Policy v5 replaces v4, which are different files). Flag the replaced ones so search prefers current documents; questions about the past still see them:
+
+```powershell
+python tools/mark_superseded.py C:\company_corpus\corpus          # preview
+python tools/mark_superseded.py C:\company_corpus\corpus --yes    # apply (re-run after new uploads)
+```
+
 Free-tier notes: Pinecone Starter accepts 250K embedding tokens/minute, so uploads are batched by estimated tokens and wait out 429s. A very large spreadsheet can still be too big to embed; leave it out.
 
 ### Tests
@@ -129,7 +138,7 @@ Tests use fakes for Supabase, Pinecone, Gemini and Neo4j; no keys needed.
 ## Status
 
 Built: ingestion with versioning, hybrid vector search, graph loader, alias gazetteer, lexical layer, router, Text2Cypher, entity-anchored retrieval with RRF fusion and optional rerank, UI citations.
-Not yet: ingestion waves 1-6 (html/markdown/pptx/eml/vtt/json/yaml readers, access control by confidentiality), LLM relation extraction for prose-only relationships, and marking superseded policy versions from the corpus sidecar metadata.
+Not yet: ingestion waves 1-6 (html/markdown/pptx/eml/vtt/json/yaml readers, access control by confidentiality), and LLM relation extraction for prose-only relationships.
 
 ## Troubleshooting
 

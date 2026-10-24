@@ -115,3 +115,38 @@ def test_answer_uses_graph_anchored_chunks_for_vanilla_route(env, fake_graph, fa
     result = rag.answer_question("Who approves leave?", [{"question": "q", "answer": "a"}])
     names = [s["file_name"] for s in result["sources"]]
     assert "approvals.txt" in names and "leave.txt" in names
+
+
+# ------------------------ relevance cut-off and neighbours ------------------------
+def test_reranked_results_drop_irrelevant_chunks_but_keep_the_top_two(env, cohere, monkeypatch):
+    chunks = [chunk("a", 0, "A"), chunk("b", 0, "B"), chunk("c", 0, "C"), chunk("d", 0, "D")]
+    scores = [0.9, 0.01, 0.6, 0.02]
+
+    def fake_rerank(q, cands, top_n):
+        return [{**c, "score": s} for c, s in zip(cands, scores)], True
+    monkeypatch.setattr(retrieval, "rerank", fake_rerank)
+    monkeypatch.setattr(retrieval, "retrieve_documents", lambda *a, **k: chunks)
+    monkeypatch.setattr(retrieval, "neighbours", lambda c: [])
+    out = retrieval.retrieve_context("q")
+    assert [c["doc_id"] for c in out] == ["a", "b", "c"]      # b is kept as the 2nd best; d is cut
+
+
+def test_neighbours_fetch_adjacent_chunks_of_the_top_hits(env, fake_graph):
+    import io
+    from fastapi import UploadFile
+    from ingestion import ingest_file
+    text = "Alpha section. " * 200 + "\n\n" + "Beta section about sick leave. " * 200 + "\n\n" + "Gamma. " * 200
+    ingest_file(UploadFile(filename="policy.txt", file=io.BytesIO(text.encode())))
+    ids = sorted(env.index.ns["docs"])
+    assert len(ids) >= 3
+    first = retrieval.retrieve_documents.__globals__["chunk_from_metadata"](ids[1], 1.0, env.index.ns["docs"][ids[1]]["metadata"])
+    extra = retrieval.neighbours([first])
+    assert [c["chunk_index"] for c in extra] == [0, 2]
+    assert retrieval.neighbours([first], seeds=0) == []
+
+
+def test_neighbour_failures_are_swallowed(monkeypatch):
+    def boom(ids):
+        raise RuntimeError("pinecone down")
+    monkeypatch.setattr(retrieval, "fetch_chunks", boom)
+    assert retrieval.neighbours([chunk("a", 1)]) == []

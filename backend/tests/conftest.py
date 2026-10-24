@@ -59,6 +59,10 @@ class _Query:
         self._limit = n
         return self
 
+    def range(self, start, end):
+        self._range = (start, end)
+        return self
+
     def execute(self):
         match = [r for r in self.rows if all(f(r) for f in self.filters)]
         if self.mode == "insert":
@@ -80,6 +84,8 @@ class _Query:
         if self._order:
             col, desc = self._order
             match.sort(key=lambda r: r.get(col, 0), reverse=desc)
+        if getattr(self, "_range", None):
+            return _Result(match[self._range[0] : self._range[1] + 1])
         return _Result(match[: self._limit] if self._limit else match)
 
 
@@ -132,6 +138,8 @@ def _matches(meta, flt):
             return False
         elif "$lt" in cond and not (meta.get(key) is not None and meta[key] < cond["$lt"]):
             return False
+        elif "$ne" in cond and meta.get(key) == cond["$ne"]:
+            return False
     return True
 
 
@@ -155,6 +163,10 @@ class FakeIndex:
                 "sparse": v["sparse_values"],
                 "metadata": dict(v["metadata"]),
             }
+
+    def fetch(self, ids, namespace):
+        store = self.ns.get(namespace, {})
+        return SimpleNamespace(vectors={i: SimpleNamespace(metadata=store[i]["metadata"]) for i in ids if i in store})
 
     def list(self, prefix, namespace):
         if self.fail_list:
@@ -261,7 +273,7 @@ class FakeLLM:
             raise RuntimeError("llm down")
         if schema.__name__ == "CypherQuery":
             return schema(cypher=self.cypher.pop(0) if len(self.cypher) > 1 else self.cypher[0])
-        return schema(**{"asks_individual_pay": False, **self.analysis})
+        return schema(**{"asks_individual_pay": False, "include_history": False, **self.analysis})
 
 
 @pytest.fixture

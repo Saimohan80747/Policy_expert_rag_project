@@ -42,6 +42,9 @@ GRAPH_CHUNK_CANDIDATES = 10   # chunks that mention the linked entities, added t
 GRAPH_CHUNK_WEIGHT = 0.5      # RRF weight of that list relative to vector search (1.0)
 RERANK_CANDIDATES = 20        # vector candidates to rerank (only when a Cohere key is set)
 COHERE_RERANK_MODEL = os.getenv("COHERE_RERANK_MODEL", "rerank-v3.5")
+RERANK_MIN_SCORE = 0.05       # drop reranked chunks scoring below this (the top 2 are always kept)
+NEIGHBOUR_SEEDS = 2           # top chunks whose previous/next chunks are added for context
+NEIGHBOUR_MAX = 4
 RERANK_PER_MINUTE = 8         # Cohere trial allows 10/min; stay under it
 RERANK_MONTHLY_LIMIT = 900    # trial allows ~1,000 API calls/month
 

@@ -30,6 +30,7 @@ class Analysis(BaseModel):
     route: Literal["vanilla", "graph", "hybrid"]
     entities: list[str]
     asks_individual_pay: bool
+    include_history: bool
 
 
 ANALYZE_SYSTEM = """You prepare questions for a company-documents assistant.
@@ -45,6 +46,9 @@ ANALYZE_SYSTEM = """You prepare questions for a company-documents assistant.
 4. asks_individual_pay: true only when the question asks for a specific person's salary, pay, bonus, CTC or
    other compensation (including the asker's own). False for questions about pay policies, salary bands,
    payroll dates or compensation processes.
+5. include_history: true when the question is about the past or about how something changed (earlier versions
+   of a policy, "in 2018", "what changed", "before", "previously", "history"). False for questions about how
+   things are now, which is the usual case.
 Return only JSON."""
 
 RESTRICTED_ANSWER = (
@@ -78,7 +82,7 @@ def analyze_question(question, history=None):
     """Rewrite follow-ups and pick a retrieval route. Never raises: falls back to the raw question."""
     if not history and not graph_available():
         # Nothing to resolve and nothing to route to: save an LLM call.
-        return Analysis(standalone_question=question, route="vanilla", entities=[], asks_individual_pay=False)
+        return Analysis(standalone_question=question, route="vanilla", entities=[], asks_individual_pay=False, include_history=False)
 
     prompt = f"Chat history:\n{_format_history(history) or '(none)'}\n\nLatest question: {question}"
     try:
@@ -88,7 +92,7 @@ def analyze_question(question, history=None):
         return analysis
     except Exception:  # noqa: BLE001 - analysis is an optimisation, never a blocker
         logger.exception("Question analysis failed; using the raw question")
-        return Analysis(standalone_question=question, route="hybrid", entities=[], asks_individual_pay=False)
+        return Analysis(standalone_question=question, route="hybrid", entities=[], asks_individual_pay=False, include_history=False)
 
 
 def build_prompt(question, chunks, graph=None):
@@ -169,7 +173,8 @@ def answer_question(question, history=None):
 
     chunks = []
     if route_used != "graph":  # a pure graph answer needs no document passages
-        chunks = retrieve_context(standalone, _linked(graph, standalone, analysis.entities), top_k=RETRIEVE_TOP_K)
+        chunks = retrieve_context(standalone, _linked(graph, standalone, analysis.entities), top_k=RETRIEVE_TOP_K,
+                                  include_history=analysis.include_history)
     sources = [_source(n, c) for n, c in enumerate(chunks, start=1)]
     has_graph = route_used != "vanilla" and graph and graph["facts"]
 

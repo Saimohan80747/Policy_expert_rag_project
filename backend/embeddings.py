@@ -210,6 +210,19 @@ def retire_older_versions(doc_id, keep_version):
             )
 
 
+def set_superseded(doc_id, flag=True):
+    """Flag every chunk of a document as replaced by a newer, differently named document."""
+    index = get_index()
+    meta = {"superseded": bool(flag)}
+    try:
+        index.update(filter={"doc_id": {"$eq": doc_id}}, set_metadata=meta, namespace=PINECONE_NAMESPACE)
+        return
+    except Exception:  # noqa: BLE001 - older SDK/index: fall back to per-vector updates
+        logger.info("Filter update unavailable; flagging %s one vector at a time", doc_id)
+    for vec_id in list_ids(doc_id):
+        index.update(id=vec_id, set_metadata=meta, namespace=PINECONE_NAMESPACE)
+
+
 def cleanup_version(doc_id, version):
     """Best-effort removal of one version's vectors; failures are logged, not raised."""
     try:
