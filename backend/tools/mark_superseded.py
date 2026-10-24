@@ -31,9 +31,9 @@ def find_meta_dir(folder) -> Path:
     raise SystemExit(f"No _meta folder in {folder} or its parent")
 
 
-def superseded_ids(meta_dir) -> set[str]:
-    """Corpus ids that another document names in its `supersedes` field."""
-    out = set()
+def superseded_map(meta_dir) -> dict[str, set[str]]:
+    """{old corpus id: ids of the documents that supersede it}, from the `supersedes` fields."""
+    out = {}
     for path in Path(meta_dir).glob("*.json"):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -44,8 +44,13 @@ def superseded_ids(meta_dir) -> set[str]:
         value = data.get("supersedes")
         for old in ([value] if isinstance(value, str) else value or []):
             if old:
-                out.add(old)
+                out.setdefault(old, set()).add(data.get("doc_id") or path.stem)
     return out
+
+
+def superseded_ids(meta_dir) -> set[str]:
+    """Corpus ids that another document names in its `supersedes` field."""
+    return set(superseded_map(meta_dir))
 
 
 def corpus_id(file_name):
@@ -66,6 +71,16 @@ def current_documents(supabase) -> list[dict]:
 
 def select_documents(rows, ids) -> list[dict]:
     return [r for r in rows if corpus_id(r["file_name"]) in ids]
+
+
+def replaceable_ids(rows, mapping) -> set[str]:
+    """Old ids whose replacement is actually uploaded.
+
+    A document replaced by one we do not have (a later wave not ingested yet) must stay visible, or
+    nothing current would be left to answer from.
+    """
+    uploaded = {corpus_id(r["file_name"]) for r in rows}
+    return {old for old, news in mapping.items() if news & uploaded}
 
 
 def apply_flag(docs, flag, set_vectors, set_graph, log=print):
@@ -99,9 +114,12 @@ def main(argv=None):
     from embeddings import set_superseded
     from supabase_.supabase_db import supabase_var
 
-    ids = superseded_ids(find_meta_dir(args.folder))
-    docs = select_documents(current_documents(supabase_var), ids)
-    print(f"{len(ids)} documents are superseded in the corpus metadata; {len(docs)} of them are uploaded.")
+    mapping = superseded_map(find_meta_dir(args.folder))
+    rows = current_documents(supabase_var)
+    ids = set(mapping) if args.clear else replaceable_ids(rows, mapping)   # --clear undoes any earlier flagging
+    docs = select_documents(rows, ids)
+    print(f"{len(mapping)} documents are superseded in the corpus metadata; {len(docs)} of them are uploaded "
+          f"and have their replacement uploaded too." if not args.clear else f"Clearing {len(docs)} uploaded documents.")
     for doc in docs[:15]:
         print("  ", doc["file_name"])
     if len(docs) > 15:

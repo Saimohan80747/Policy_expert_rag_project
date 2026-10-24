@@ -314,6 +314,7 @@ class FakeGraph:
         self.exact = {}                          # normalised surface -> rows
         self.fuzzy = []
         self.chunk_rows = []                     # rows for the entity-anchored chunk query
+        self.neighbour_rows = []                 # rows for the neighbourhood summary query
         self.read_results = [[]]                 # queue: a list of rows, or an Exception to raise
         self.alias_rows = [
             {"norm": n, "alias": a, "alias_type": t, "ambiguous": amb, "uid": u, "label": lab}
@@ -326,6 +327,8 @@ class FakeGraph:
             raise RuntimeError("neo4j down")
         if "RETURN a.norm" in query:
             return self.alias_rows
+        if "AS outgoing" in query:
+            return self.neighbour_rows
         if "RETURN c.cid AS cid" in query:
             return self.chunk_rows
         if "RETURN x.id" in query:

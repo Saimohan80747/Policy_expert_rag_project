@@ -304,3 +304,20 @@ def test_long_file_names_keep_their_extension():
 
     name = safe_filename("a" * 300 + ".docx")
     assert len(name) == 120 and name.endswith(".docx")
+
+
+def test_spreadsheet_banner_row_is_not_used_as_the_header():
+    import pandas as pd
+    from io import BytesIO
+    from file_reader import extract_text
+
+    buffer = BytesIO()
+    rows = [["Lumenstack | PeopleHub | CONFIDENTIAL", None, None], [None, None, None],
+            ["Employee ID", "Name", "Office"], ["LS00001", "Vikram", "HYD"], ["LS00002", "Asha", None]]
+    pd.DataFrame(rows).to_excel(buffer, header=False, index=False, sheet_name="HYD")
+    state = extract_text({"file_bytes": buffer.getvalue(), "file_name": "x.xlsx", "extension": ".xlsx"})
+    text = state["text"]
+    assert "Unnamed" not in text
+    assert text.count("Lumenstack | PeopleHub | CONFIDENTIAL") == 1
+    assert "Employee ID: LS00001 | Name: Vikram | Office: HYD" in text
+    assert "Employee ID: LS00002 | Name: Asha" in text and "Office: None" not in text

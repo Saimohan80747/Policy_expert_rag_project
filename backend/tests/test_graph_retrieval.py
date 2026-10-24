@@ -105,7 +105,7 @@ def test_empty_results_after_retry_report_no_facts(fake_graph, fake_llm):
     fake_llm.cypher = [GOOD]
     fake_graph.read_results = [[]]
     ctx = graph_retrieval.retrieve_graph_context("who is the manager", [])
-    assert ctx["facts"] == [] and "no rows" in ctx["error"] and len(fake_graph.read_calls) == 2
+    assert ctx["facts"] == [] and "no rows" in ctx["error"] and len(fake_graph.read_calls) == 3
 
 
 def test_compensation_questions_are_flagged_restricted(fake_graph, fake_llm):
@@ -266,3 +266,32 @@ def test_answer_prompt_includes_the_query_that_explains_the_rows(env, fake_graph
     rag.answer_question("Who reported to X in 2018?")
     prompt = [c for c in fake_llm.calls if c[3] == rag.ANSWER_SYSTEM][0][2]
     assert "REPORTS_TO" in prompt and "[G1] employee=Sravani Pothineni" in prompt
+
+
+def test_neighbourhood_is_shown_to_the_model(fake_graph, fake_llm):
+    from knowledge_graph import text2cypher
+
+    text2cypher.reset_neighbourhood_cache()
+    fake_graph.neighbour_rows = [{"rel": "ACCOUNT_MANAGER_OF", "outgoing": False, "label": "Person", "n": 3, "current": 1}]
+    fake_llm.cypher = [GOOD]
+    fake_graph.read_results = [[{"manager": "A"}]]
+    graph_retrieval.retrieve_graph_context("who manages Deccan Freight Logistics", ["Deccan Freight Logistics"])
+    prompt = next(c[2] for c in fake_llm.calls if "Linked entities" in c[2])
+    assert "<-[:ACCOUNT_MANAGER_OF]-(Person) x3 (1 current)" in prompt
+    text2cypher.reset_neighbourhood_cache()
+
+
+def test_a_count_of_zero_is_retried_once_and_kept_if_it_stays_zero(fake_graph, fake_llm):
+    fake_llm.cypher = [GOOD]
+    fake_graph.read_results = [[{"n": 0}]]
+    ctx = graph_retrieval.retrieve_graph_context("how many records describe it", [])
+    assert len(fake_graph.read_calls) == 3
+    assert ctx["rows"] == [{"n": 0}] and ctx["error"] is None
+
+
+def test_a_zero_count_is_replaced_by_a_better_retry(fake_graph, fake_llm):
+    fake_llm.cypher = [GOOD]
+    fake_graph.read_results = [[{"n": 0}], [{"n": 2}]]
+    ctx = graph_retrieval.retrieve_graph_context("how many records describe it", [])
+    assert ctx["rows"] == [{"n": 2}] and len(fake_graph.read_calls) == 2
+    assert "only zeros" in next(c[2] for c in fake_llm.calls[1:] if "did not work" in c[2])

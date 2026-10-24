@@ -38,12 +38,35 @@ def _with_retry(call, attempts=3):
             raise
 
 
-def _generate(prompt, config, model):
-    response = _with_retry(
-        lambda: get_client().models.generate_content(
-            model=model or GEMINI_MODEL, contents=prompt, config=config
-        )
+_cooldown = {}   # model -> time until which it is skipped after its quota ran out
+COOLDOWN_SECONDS = 300
+
+
+def _call(prompt, config, model):
+    return _with_retry(
+        lambda: get_client().models.generate_content(model=model, contents=prompt, config=config)
     )
+
+
+def _generate(prompt, config, model):
+    """Use the requested model; if its quota is exhausted, fall back to the default (cheaper) model.
+
+    Free-tier quotas differ a lot by model (the answer model may allow only a handful of requests a
+    day), so a spent quota should degrade the answer quality, not break the chat.
+    """
+    model = model or GEMINI_MODEL
+    if model != GEMINI_MODEL and _cooldown.get(model, 0) > time.time():
+        model_to_use = GEMINI_MODEL
+    else:
+        model_to_use = model
+    try:
+        response = _call(prompt, config, model_to_use)
+    except errors.APIError as exc:
+        if exc.code != 429 or model_to_use == GEMINI_MODEL:
+            raise
+        _cooldown[model_to_use] = time.time() + COOLDOWN_SECONDS
+        logger.warning("%s quota exhausted; falling back to %s for %ss", model_to_use, GEMINI_MODEL, COOLDOWN_SECONDS)
+        response = _call(prompt, config, GEMINI_MODEL)
     text = response.text
     if not text:
         raise RuntimeError("Gemini returned an empty response (it may have been blocked).")

@@ -5,7 +5,7 @@ import time
 from app_config import GRAPH_MAX_ATTEMPTS, GRAPH_MAX_ROWS, GRAPH_QUERY_TIMEOUT
 from knowledge_graph import db
 from knowledge_graph.linker import link_entities
-from knowledge_graph.text2cypher import RestrictedQuery, generate_cypher, get_schema, validate_cypher
+from knowledge_graph.text2cypher import RestrictedQuery, generate_cypher, get_schema, neighbourhood, validate_cypher
 
 logger = logging.getLogger(__name__)
 MAX_FACT_CHARS = 300
@@ -45,18 +45,27 @@ def format_facts(rows) -> list[str]:
     return facts
 
 
+def only_zeros(rows) -> bool:
+    """True when every value is 0, empty or null: a count of nothing usually means a wrong path, not a real zero."""
+    values = [v for row in rows for v in row.values()]
+    return bool(rows) and all(v in (None, 0, [], "", 0.0) for v in values)
+
+
 def retrieve_graph_context(question: str, entities: list[str] | None = None) -> dict:
     """Never raises. Returns {linked, cypher, rows, facts, as_of, restricted, error}."""
-    ctx = {"linked": [], "cypher": None, "rows": [], "facts": [], "as_of": None, "restricted": False, "error": None}
+    ctx = {"linked": [], "cypher": None, "rows": [], "facts": [], "as_of": None, "restricted": False, "error": None,
+           "llm_calls": 0}
     try:
         as_of = _check_ready()["as_of"] or "today"
         ctx["as_of"] = as_of
         ctx["linked"] = link_entities(question, entities)
         schema = get_schema()
-        feedback = None
+        nearby = neighbourhood(ctx["linked"])
+        feedback, fallback_rows, fallback_cypher = None, [], None
         for attempt in range(GRAPH_MAX_ATTEMPTS):
+            ctx["llm_calls"] += 1
             try:
-                cypher = validate_cypher(generate_cypher(question, ctx["linked"], as_of, schema, feedback))
+                cypher = validate_cypher(generate_cypher(question, ctx["linked"], as_of, schema, feedback, nearby=nearby))
             except RestrictedQuery:
                 ctx["restricted"] = True
                 return ctx
@@ -71,9 +80,18 @@ def retrieve_graph_context(question: str, entities: list[str] | None = None) -> 
                 ctx["rows"] = []
                 continue
             ctx["rows"], feedback = rows, None
-            if rows:
+            if rows and not only_zeros(rows):
                 break
-            feedback = "It returned no rows. Re-check entity uids, relationship direction, labels and date filters."
+            if rows:  # all zeros: keep it as the answer if no attempt does better
+                fallback_rows, fallback_cypher = rows, cypher
+                feedback = ("It returned only zeros or empty values. Check the relationship names and directions against "
+                            "what the entities are connected to, and remove any filter the question did not ask for.")
+            else:
+                feedback = "It returned no rows. Re-check entity uids, relationship direction, labels and date filters."
+        if not ctx["rows"] and fallback_rows:
+            ctx["rows"], ctx["cypher"] = fallback_rows, fallback_cypher
+        elif ctx["rows"] and only_zeros(ctx["rows"]) and fallback_rows:
+            ctx["rows"], ctx["cypher"] = fallback_rows, fallback_cypher
         ctx["facts"] = format_facts(ctx["rows"])
         if not ctx["rows"]:
             ctx["error"] = feedback

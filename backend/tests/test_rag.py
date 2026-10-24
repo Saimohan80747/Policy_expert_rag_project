@@ -152,3 +152,27 @@ def test_preview_extracts_text_from_any_supported_type(env):
     assert "Remote work needs approval." in client.get("/preview/notes.txt").json()["text"]
     assert "Name: Asha | City: Pune" in client.get("/preview/people.csv").json()["text"]
     assert client.get("/preview/missing.txt").status_code == 404
+
+
+def test_llm_falls_back_to_the_default_model_when_a_quota_is_spent(monkeypatch):
+    from types import SimpleNamespace
+    from app_config import GEMINI_MODEL
+
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    llm._cooldown.clear()
+    used = []
+
+    class Models:
+        def generate_content(self, model, contents, config):
+            used.append(model)
+            if model == "big-model":
+                raise errors.ClientError(429, {"error": {"message": "quota", "status": "RESOURCE_EXHAUSTED"}})
+            return SimpleNamespace(text="ok")
+
+    monkeypatch.setattr(llm, "get_client", lambda: SimpleNamespace(models=Models()))
+    assert llm.generate_text("hi", model="big-model") == "ok"
+    assert used[-1] == GEMINI_MODEL and used.count("big-model") == 3
+    before = len(used)
+    assert llm.generate_text("again", model="big-model") == "ok"
+    assert used[before:] == [GEMINI_MODEL]            # cooled down: no new attempts on the big model
+    llm._cooldown.clear()

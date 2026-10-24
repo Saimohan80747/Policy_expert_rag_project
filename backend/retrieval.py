@@ -1,7 +1,12 @@
 """Document retrieval: vector search + entity-anchored graph chunks, fused with RRF, optionally reranked."""
 import logging
+import math
+import re
 
 from app_config import (
+    DOC_EXPAND_DOCS,
+    DOC_EXPAND_MAX,
+    DOC_SCAN_CHUNKS,
     GRAPH_CHUNK_CANDIDATES,
     GRAPH_CHUNK_WEIGHT,
     NEIGHBOUR_MAX,
@@ -67,17 +72,93 @@ def fuse(vector, graph, k=RRF_K, graph_weight=GRAPH_CHUNK_WEIGHT) -> list[dict]:
     return [items[key] for key in sorted(scores, key=scores.get, reverse=True)]
 
 
-def retrieve_context(question: str, linked=None, top_k: int = RETRIEVE_TOP_K, include_history: bool = False) -> list[dict]:
-    wide = RERANK_CANDIDATES if rerank_enabled() else top_k
+STOPWORDS = frozenset(
+    "a an and are as at be by can did do does for from has have how if in is it its of on or that the this to was "
+    "were what when where which who whom whose why will with under about stated value according state say says".split())
+
+
+def tokens(text: str) -> list[str]:
+    out = []
+    for t in re.findall(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*", (text or "").lower()):
+        if t in STOPWORDS or len(t) < 2:
+            continue
+        out.append(t[:-1] if len(t) > 3 and t.endswith("s") and not t.endswith("ss") else t)
+    return out
+
+
+def expand_documents(question, chunks, docs=DOC_EXPAND_DOCS, limit=DOC_EXPAND_MAX, scan=DOC_SCAN_CHUNKS) -> list[dict]:
+    """Pull the sections of the best documents that match the question's rarer words.
+
+    Search finds the right document but not always the right section of a long one (a value in clause 6.2 while
+    the best-scoring chunk is the header). Inside each document, words that few of its chunks contain count more.
+    """
+    wanted_terms = set(tokens(question))
+    if not wanted_terms:
+        return []
+    have = {chunk_key(c) for c in chunks}
+    top, ids = [], []
+    for c in chunks:
+        ref = (c.get("doc_id"), c.get("version"))
+        if None in ref or ref in top:
+            continue
+        top.append(ref)
+        if len(top) >= docs:
+            break
+    for doc_id, version in top:
+        ids += [f"{doc_id}:v{version}:{i}" for i in range(scan) if (doc_id, version, i) not in have]
+    if not ids:
+        return []
+    try:
+        found = fetch_chunks(ids)
+    except Exception as exc:  # noqa: BLE001 - context expansion is a bonus
+        logger.warning("Document expansion fetch failed: %s: %s", type(exc).__name__, exc)
+        return []
+    scored = []
+    for doc_id, version in top:
+        pool = [c for c in found + [c for c in chunks if chunk_key(c)[:2] == (doc_id, version)]
+                if chunk_key(c)[:2] == (doc_id, version) and c.get("text")]
+        pool = list({chunk_key(c): c for c in pool}.values())
+        bags = {chunk_key(c): set(tokens(c["text"])) for c in pool}
+        df = {t: sum(t in b for b in bags.values()) for t in wanted_terms}
+        for c in pool:
+            key = chunk_key(c)
+            if key in have:
+                continue
+            hit = [t for t in wanted_terms if t in bags[key]]
+            weight = sum(math.log(1 + len(pool) / df[t]) for t in hit)
+            rare = any(df[t] <= 2 for t in hit)
+            if hit and (len(hit) >= 2 or rare):
+                scored.append((weight * (1.0 if rare else 0.5), c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [dict(c, expanded=True) for _, c in scored[:limit]]
+
+
+def retrieve_context(question: str, linked=None, top_k: int = RETRIEVE_TOP_K, include_history: bool = False,
+                     anchored: bool = True, use_neighbours: bool = True, use_rerank: bool = True,
+                     use_expand: bool = True) -> list[dict]:
+    """The three switches exist so the evaluation can ablate each step; the app uses the defaults."""
+    use_rerank = use_rerank and rerank_enabled()
+    wide = RERANK_CANDIDATES if use_rerank else top_k
     vector = retrieve_documents(question, top_k=wide, include_superseded=include_history)
     if not vector and not include_history:  # only superseded documents match: better an old answer than none
         vector = retrieve_documents(question, top_k=wide, include_superseded=True)
-    graph = entity_chunks(linked, include_history=include_history) if linked else []
+    graph = entity_chunks(linked, include_history=include_history) if (linked and anchored) else []
     fused = fuse(vector, graph) if graph else vector
-    chunks, reranked = rerank(question, fused[: max(wide, top_k)], top_k)
+    if use_rerank:
+        chunks, reranked = rerank(question, fused[: max(wide, top_k)], top_k)
+    else:
+        chunks, reranked = fused[:top_k], False
     if reranked:  # scores are meaningful: drop clearly irrelevant passages, but keep the best two
         chunks = [c for i, c in enumerate(chunks) if i < 2 or c["score"] >= RERANK_MIN_SCORE]
-    return chunks + neighbours(chunks)
+    extra = expand_documents(question, chunks) if use_expand else []
+    near = neighbours(chunks) if use_neighbours else []
+    seen = {chunk_key(c) for c in chunks}
+    out = list(chunks)
+    for c in extra + near:
+        if chunk_key(c) not in seen:
+            seen.add(chunk_key(c))
+            out.append(c)
+    return out
 
 
 def neighbours(chunks, seeds=NEIGHBOUR_SEEDS, limit=NEIGHBOUR_MAX) -> list[dict]:

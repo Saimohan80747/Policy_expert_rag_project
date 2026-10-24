@@ -1,4 +1,5 @@
 """Neo4j connection (lazy, so the API starts without graph credentials)."""
+import logging
 import os
 from pathlib import Path
 
@@ -7,6 +8,9 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 
 _driver = None
+
+# Neo4j reports deprecations of the fulltext procedure on every call; they are noise in the logs.
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 
 class GraphNotConfigured(RuntimeError):

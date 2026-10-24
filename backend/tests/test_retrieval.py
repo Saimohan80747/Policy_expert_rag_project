@@ -150,3 +150,52 @@ def test_neighbour_failures_are_swallowed(monkeypatch):
         raise RuntimeError("pinecone down")
     monkeypatch.setattr(retrieval, "fetch_chunks", boom)
     assert retrieval.neighbours([chunk("a", 1)]) == []
+
+
+# ----------------------------- in-document expansion -----------------------------
+POLICY = [
+    "Policy header, version 2.0, effective 1 April 2019. Performance Management Policy.",
+    "Definitions of goals, calibration and ratings.",
+    "6.2 Forced distribution: 10/20/50/15/5. Performance ratings are calibrated.",
+    "Change log. Performance Management Policy version table.",
+]
+
+
+@pytest.fixture
+def policy_doc(monkeypatch):
+    chunks = {f"pol:v1:{i}": chunk("pol", i, t) for i, t in enumerate(POLICY)}
+    monkeypatch.setattr(retrieval, "fetch_chunks", lambda ids: [chunks[i] for i in ids if i in chunks])
+    return chunks
+
+
+def test_expand_pulls_the_section_with_the_rare_words(policy_doc):
+    got = retrieval.expand_documents("What is the stated forced distribution in the Performance Management Policy?",
+                                     [policy_doc["pol:v1:0"]])
+    assert got and got[0]["chunk_index"] == 2 and got[0]["expanded"] is True
+
+
+def test_expand_adds_nothing_when_no_section_matches(policy_doc):
+    assert retrieval.expand_documents("quantum teleportation schedule", [policy_doc["pol:v1:0"]]) == []
+
+
+def test_expand_skips_chunks_already_present(policy_doc):
+    have = [policy_doc["pol:v1:0"], policy_doc["pol:v1:2"]]
+    got = retrieval.expand_documents("forced distribution", have)
+    assert all(c["chunk_index"] != 2 for c in got)
+
+
+def test_expand_failure_is_swallowed(monkeypatch):
+    def boom(ids):
+        raise RuntimeError("pinecone down")
+    monkeypatch.setattr(retrieval, "fetch_chunks", boom)
+    assert retrieval.expand_documents("forced distribution", [chunk("pol", 0)]) == []
+
+
+def test_retrieve_context_adds_expanded_sections_once(policy_doc, monkeypatch):
+    monkeypatch.setattr(retrieval, "retrieve_documents", lambda q, top_k, include_superseded=False: [policy_doc["pol:v1:0"]])
+    monkeypatch.setattr(retrieval, "rerank_enabled", lambda: False)
+    out = retrieval.retrieve_context("forced distribution", None, use_neighbours=True)
+    keys = [retrieval.chunk_key(c) for c in out]
+    assert len(keys) == len(set(keys)) and ("pol", 1, 2) in keys
+    off = retrieval.retrieve_context("forced distribution", None, use_neighbours=False, use_expand=False)
+    assert [retrieval.chunk_key(c) for c in off] == [("pol", 1, 0)]

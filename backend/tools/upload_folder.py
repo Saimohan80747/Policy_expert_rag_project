@@ -14,6 +14,8 @@ import time
 from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # so `supabase_` imports work from tools/
+
 SUPPORTED = {".pdf", ".docx", ".txt", ".csv", ".xlsx", ".zip"}
 
 
@@ -52,6 +54,17 @@ def upload_all(files, post, log=None, pause=0.0, out=print):
     return totals
 
 
+def delete_existing(client, api, name):
+    """Remove a document (Supabase, Pinecone, graph) so the same file can be ingested again."""
+    from urllib.parse import quote
+
+    from supabase_.file_upload import safe_filename
+
+    r = client.delete(f"{api}/delete-document/{quote(safe_filename(name), safe='')}")
+    if r.status_code not in (200, 404):
+        r.raise_for_status()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("folder")
@@ -60,6 +73,8 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, help="stop after N files")
     ap.add_argument("--ext", nargs="*", help="only these extensions, e.g. .txt .docx")
     ap.add_argument("--pause", type=float, default=0.0, help="seconds to wait between files")
+    ap.add_argument("--replace", action="store_true",
+                    help="delete each document first so it is re-ingested even if its bytes are unchanged")
     ap.add_argument("--log", default="upload_log.jsonl")
     args = ap.parse_args(argv)
 
@@ -74,6 +89,8 @@ def main(argv=None):
 
     with httpx.Client(timeout=600) as client, open(args.log, "a", encoding="utf-8") as log:
         def post(path):
+            if args.replace:
+                delete_existing(client, args.api, path.name)
             r = client.post(f"{args.api}/pipeline", files={"file": (path.name, path.read_bytes())})
             r.raise_for_status()
             return r.json()

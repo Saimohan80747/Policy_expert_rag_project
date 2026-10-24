@@ -45,6 +45,36 @@ def _df_to_records(df: pd.DataFrame) -> list[str]:
     return lines
 
 
+def _clean_cell(value) -> str:
+    text = "" if value is None else str(value).strip()
+    return "" if text.lower() in ("nan", "none", "nat") else text
+
+
+def _split_banner_and_table(raw: pd.DataFrame):
+    """Spreadsheets often start with a title/banner row and a blank row before the real header.
+
+    Returns (preface_lines, table) where the table's columns are the real header. Without this the
+    banner becomes the header and every row is indexed as 'Unnamed: 3: value'.
+    """
+    raw = raw.map(_clean_cell)
+    counts = [sum(1 for v in row if v) for row in raw.itertuples(index=False, name=None)]
+    widest = max(counts[:30] or [0])
+    if widest < 2:  # a plain list, not a table
+        lines = [" ".join(v for v in row if v) for row in raw.itertuples(index=False, name=None)]
+        return [line for line in lines if line], raw.iloc[0:0]
+    threshold = max(2, int(widest * 0.6 + 0.999))
+    header_at = next((i for i, c in enumerate(counts[:10]) if c >= threshold), 0)
+    preface = [" ".join(v for v in row if v) for row in raw.iloc[:header_at].itertuples(index=False, name=None)]
+    header, seen = [], {}
+    for n, name in enumerate(raw.iloc[header_at], start=1):
+        name = name or f"Column {n}"
+        seen[name] = seen.get(name, 0) + 1
+        header.append(name if seen[name] == 1 else f"{name} ({seen[name]})")
+    table = raw.iloc[header_at + 1 :].copy()
+    table.columns = header
+    return [line for line in preface if line], table
+
+
 def _docx_text(doc) -> str:
     """Paragraphs and tables in document order; headings become markdown '#' lines."""
     blocks = []
@@ -151,15 +181,16 @@ def extract_text(state):
         text = "\n".join(_df_to_records(df))
 
     elif extension == ".xlsx":
-        sheets = pd.read_excel(BytesIO(file_bytes), sheet_name=None, dtype=str)
+        sheets = pd.read_excel(BytesIO(file_bytes), sheet_name=None, dtype=str, header=None)
         excel_meta, parts = {}, []
-        for sheet, df in sheets.items():
+        for sheet, raw in sheets.items():
+            preface, df = _split_banner_and_table(raw)
             excel_meta[sheet] = {
                 "rows": df.shape[0],
                 "columns": df.shape[1],
                 "column_names": [str(c) for c in df.columns],
             }
-            records = _df_to_records(df)
+            records = preface + _df_to_records(df)
             if records:
                 parts.append(f"## Sheet: {sheet}\n" + "\n".join(records))
         file_metadata["excel_metadata"] = excel_meta

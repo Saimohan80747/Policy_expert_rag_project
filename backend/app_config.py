@@ -35,7 +35,7 @@ GEMINI_ANSWER_MODEL = os.getenv("GEMINI_ANSWER_MODEL", "gemini-3.8-flash")
 CYPHER_MODEL = os.getenv("GEMINI_CYPHER_MODEL", GEMINI_ANSWER_MODEL)
 GRAPH_MAX_ROWS = 50
 GRAPH_QUERY_TIMEOUT = 15      # seconds
-GRAPH_MAX_ATTEMPTS = 2        # query generation attempts (the second one sees the first one's error)
+GRAPH_MAX_ATTEMPTS = 3        # query generation attempts (each retry sees the previous error)
 
 # --- Retrieval upgrade ---------------------------------------------------------
 GRAPH_CHUNK_CANDIDATES = 10   # chunks that mention the linked entities, added to the vector candidates
@@ -52,3 +52,8 @@ RERANK_MONTHLY_LIMIT = 900    # trial allows ~1,000 API calls/month
 RETRIEVE_TOP_K = 8
 HISTORY_TURNS = 4          # previous Q/A pairs used to resolve follow-up questions
 HISTORY_ANSWER_CHARS = 600
+
+# --- In-document section pull ----------------------------------------------------
+DOC_EXPAND_DOCS = 3           # look inside the best N documents
+DOC_EXPAND_MAX = 3            # add at most this many extra chunks
+DOC_SCAN_CHUNKS = 14          # how many chunks of a document to scan
