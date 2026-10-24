@@ -39,6 +39,21 @@ def store_document(state):
     return state
 
 
+def sync_graph(state):
+    """Add the document to the knowledge graph. The graph is optional and never fails an ingest."""
+    from knowledge_graph import lexical
+    from knowledge_graph.db import GraphNotConfigured
+
+    try:
+        state["graph"] = lexical.sync_document(state)
+    except GraphNotConfigured:
+        state["graph"] = "skipped"
+    except Exception as exc:  # noqa: BLE001 - vectors and metadata are already stored
+        state["graph"] = "failed"
+        state.setdefault("warnings", []).append(f"Graph sync failed: {type(exc).__name__}: {exc}")
+    return state
+
+
 INGEST_STEPS = [
     upload_file,
     extract_text,
@@ -46,6 +61,7 @@ INGEST_STEPS = [
     chunk_text,
     embedding_chunks,
     store_document,
+    sync_graph,
 ]
 
 
@@ -60,6 +76,8 @@ def public_result(state):
     for key in ("supersedes", "duplicate_of", "hash", "url", "step", "error", "warnings"):
         if state.get(key):
             result[key] = state[key]
+    if state.get("graph"):
+        result["graph"] = state["graph"]
     if state.get("embedded_chunks") is not None:
         result["chunks"] = state["embedded_chunks"]
     return result

@@ -73,50 +73,95 @@ def _field(obj, key):
         return getattr(obj, key)
 
 
-def _with_retry(fn, attempts=4):
-    for attempt in range(attempts):
+def _is_rate_limit(exc):
+    text = f"{type(exc).__name__} {exc}".lower()
+    return "429" in text or "ratelimit" in text or "resource_exhausted" in text or "rate limit" in text
+
+
+def _with_retry(fn, attempts=4, rate_limit_attempts=6):
+    """Retry transient errors quickly; wait out rate limits (they reset every minute)."""
+    attempt = 0
+    while True:
         try:
             return fn()
-        except Exception:  # noqa: BLE001 - rate limits / transient errors
-            if attempt == attempts - 1:
+        except Exception as exc:  # noqa: BLE001 - rate limits / transient errors
+            limited = _is_rate_limit(exc)
+            attempt += 1
+            if attempt >= (rate_limit_attempts if limited else attempts):
                 raise
-            time.sleep(2**attempt)
+            time.sleep(20 * attempt if limited else 2 ** (attempt - 1))
+
+
+class _TokenBudget:
+    """Keeps passage embedding under the provider's tokens-per-minute cap (free tier: 250K)."""
+
+    def __init__(self, limit=200_000, window=60.0):
+        self.limit, self.window, self.events = limit, window, []  # events: (time, tokens)
+
+    def wait(self, tokens, now=time.monotonic, sleep=time.sleep):
+        tokens = min(tokens, self.limit)
+        while True:
+            t = now()
+            self.events = [(at, n) for at, n in self.events if t - at < self.window]
+            if sum(n for _, n in self.events) + tokens <= self.limit:
+                self.events.append((t, tokens))
+                return
+            sleep(max(self.events[0][0] + self.window - t, 0.1))
+
+
+_budgets = {}
+MAX_REQUEST_TOKENS = 60_000  # estimated tokens per embed call; well under the 250K/min cap
+
+
+def estimate_tokens(text):
+    """Pessimistic: tables full of names, ids and dates cost ~1.4 characters per token."""
+    return int(len(text) / 1.25) + 1
+
+
+def _batches(texts):
+    """Slices of `texts` limited by count (EMBED_BATCH) and by estimated tokens per request."""
+    batch, used = [], 0
+    for text in texts:
+        cost = estimate_tokens(text)
+        if batch and (len(batch) >= EMBED_BATCH or used + cost > MAX_REQUEST_TOKENS):
+            yield batch
+            batch, used = [], 0
+        batch.append(text)
+        used += cost
+    if batch:
+        yield batch
+
+
+def _throttle(model, batch, input_type):
+    if input_type != "passage":
+        return
+    _budgets.setdefault(model, _TokenBudget()).wait(sum(estimate_tokens(t) for t in batch))
+
+
+def _embed(model, texts, input_type):
+    results = []
+    for batch in _batches(texts):
+        _throttle(model, batch, input_type)
+        res = _with_retry(
+            lambda b=batch: get_pc().inference.embed(
+                model=model,
+                inputs=b,
+                parameters={"input_type": input_type, "truncate": "END"},
+            )
+        )
+        results.extend(res)
+    return results
 
 
 def embed_dense(texts, input_type="passage"):
-    vectors = []
-    for i in range(0, len(texts), EMBED_BATCH):
-        batch = texts[i : i + EMBED_BATCH]
-        res = _with_retry(
-            lambda b=batch: get_pc().inference.embed(
-                model=DENSE_MODEL,
-                inputs=b,
-                parameters={"input_type": input_type, "truncate": "END"},
-            )
-        )
-        vectors.extend(_field(r, "values") for r in res)
-    return vectors
+    return [_field(r, "values") for r in _embed(DENSE_MODEL, texts, input_type)]
 
 
 def embed_sparse(texts, input_type="passage"):
-    vectors = []
-    for i in range(0, len(texts), EMBED_BATCH):
-        batch = texts[i : i + EMBED_BATCH]
-        res = _with_retry(
-            lambda b=batch: get_pc().inference.embed(
-                model=SPARSE_MODEL,
-                inputs=b,
-                parameters={"input_type": input_type, "truncate": "END"},
-            )
-        )
-        vectors.extend(
-            {
-                "indices": _field(r, "sparse_indices"),
-                "values": _field(r, "sparse_values"),
-            }
-            for r in res
-        )
-    return vectors
+    return [
+        {"indices": _field(r, "sparse_indices"), "values": _field(r, "sparse_values")}
+        for r in _embed(SPARSE_MODEL, texts, input_type)
+    ]
 
 
 def chunk_id(doc_id, version, index):

@@ -251,7 +251,7 @@ def test_zip_with_nested_zip_duplicates_junk_and_bad_files(env):
         }
     )
     result = zfb.zip_file_breaker(upload("bundle.zip", archive), ingest_file)
-    assert sorted(e["result"]["file_name"] for e in result["ingested_files"]) == ["a.txt", "b.txt"]
+    assert sorted(e["result"]["file_name"] for e in result["ingested_files"]) == ["bundle__a.txt", "bundle__nested__b.txt"]
     assert [e["filename"] for e in result["duplicate_files"]] == ["docs/a_copy.txt"]
     assert [e["filename"] for e in result["failed_files"]] == ["tool.exe"]
     assert len(env.index.all_ids()) == 2
@@ -270,7 +270,7 @@ def test_zip_upload_whose_file_object_lacks_seekable(env):
     result = zfb.zip_file_breaker(
         UploadFile(filename="pack.zip", file=_NoSeekable(archive)), ingest_file
     )
-    assert [e["result"]["file_name"] for e in result["ingested_files"]] == ["x.txt"]
+    assert [e["result"]["file_name"] for e in result["ingested_files"]] == ["pack__x.txt"]
     assert len(result["failed_files"]) == 1
 
 
@@ -287,3 +287,20 @@ def test_hybrid_scale():
     assert dense == [0.75, 1.5] and sparse == {"indices": [3], "values": [1.0]}
     with pytest.raises(ValueError):
         hybrid_scale([1.0], {"indices": [], "values": []}, 1.5)
+
+
+def test_same_member_name_in_different_zips_does_not_become_a_new_version(env):
+    one = zfb.zip_file_breaker(
+        upload("LS-ZIP-2021-0001__close-out-pack-topaz.zip", make_zip({"Lessons_learned.txt": "Topaz lessons"})), ingest_file)
+    two = zfb.zip_file_breaker(
+        upload("LS-ZIP-2021-0002__close-out-pack-agni.zip", make_zip({"Lessons_learned.txt": "Agni lessons"})), ingest_file)
+    names = [e["result"]["file_name"] for e in one["ingested_files"] + two["ingested_files"]]
+    assert names == ["LS-ZIP-2021-0001__Lessons_learned.txt", "LS-ZIP-2021-0002__Lessons_learned.txt"]
+    assert all(r["version"] == 1 and r["is_current"] for r in env.supabase.tables["documents"])
+
+
+def test_long_file_names_keep_their_extension():
+    from supabase_.file_upload import safe_filename
+
+    name = safe_filename("a" * 300 + ".docx")
+    assert len(name) == 120 and name.endswith(".docx")

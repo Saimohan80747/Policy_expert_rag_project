@@ -269,3 +269,66 @@ def fake_llm(monkeypatch):
     monkeypatch.setattr(llm, "generate_text", fake.generate_text)
     monkeypatch.setattr(llm, "generate_json", fake.generate_json)
     return fake
+
+
+# ------------------------------- fake graph --------------------------------
+ALIASES = [
+    # norm, alias, alias_type, ambiguous, uid, label
+    ("harini subramanyam", "Harini Subramanyam", "canonical", False, "Person:LS00433", "Person"),
+    ("ls00433", "LS00433", "emp_id", False, "Person:LS00433", "Person"),
+    ("hs", "HS", "initials", True, "Person:LS00433", "Person"),
+    ("priya sharma", "Priya Sharma", "canonical", True, "Person:LS00900", "Person"),
+    ("beacon", "Beacon", "codename", False, "Project:PRJ-2012-01", "Project"),
+    ("project beacon", "Project Beacon", "codename", False, "Project:PRJ-2012-01", "Project"),
+    ("dfl", "DFL", "short", False, "Client:CL-001", "Client"),
+    ("deccan freight logistics", "Deccan Freight Logistics", "canonical", False, "Client:CL-001", "Client"),
+    ("platform", "Platform", "short", False, "Department:ENG-PLAT", "Department"),
+    ("the cto", "the CTO", "role", False, "Person:LS00002", "Person"),
+]
+
+
+class FakeGraph:
+    def __init__(self):
+        self.calls = []
+        self.documents = {"ADR-0040"}
+        self.fail = False
+        self.alias_rows = [
+            {"norm": n, "alias": a, "alias_type": t, "ambiguous": amb, "uid": u, "label": lab}
+            for n, a, t, amb, u, lab in ALIASES
+        ]
+
+    def run(self, query, **params):
+        self.calls.append((query, params))
+        if self.fail and "MERGE (d:SourceDoc" in query:
+            raise RuntimeError("neo4j down")
+        if "RETURN a.norm" in query:
+            return self.alias_rows
+        if "RETURN x.id" in query:
+            return [{"id": c} for c in params["cands"] if c in self.documents]
+        return []
+
+    def queries(self, needle):
+        return [(q, p) for q, p in self.calls if needle in q]
+
+
+@pytest.fixture(autouse=True)
+def no_real_graph(monkeypatch):
+    """Tests must never reach a real Neo4j, even when backend/.env has credentials."""
+    from knowledge_graph import db, gazetteer
+
+    def not_configured():
+        raise db.GraphNotConfigured("tests run without Neo4j")
+
+    monkeypatch.setattr(db, "get_driver", not_configured)
+    gazetteer.reset_cache()
+    yield
+    gazetteer.reset_cache()
+
+
+@pytest.fixture
+def fake_graph(monkeypatch):
+    from knowledge_graph import db
+
+    fake = FakeGraph()
+    monkeypatch.setattr(db, "run", fake.run)
+    return fake

@@ -15,7 +15,10 @@ def safe_filename(name):
     """Storage-safe file name (ASCII letters, digits, . _ -)."""
     base = os.path.basename((name or "").replace("\\", "/"))
     base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("_")
-    return (base or "unnamed")[:120]
+    if len(base) > 120:  # shorten the name, never the extension
+        stem, ext = os.path.splitext(base)
+        base = stem[: 120 - len(ext)] + ext
+    return base or "unnamed"
 
 
 def make_doc_id(file_name):

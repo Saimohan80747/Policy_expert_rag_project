@@ -161,6 +161,17 @@ def preview(file_name: str):
     return preview_file(file_name)
 
 
+@app.get("/graph/stats")
+def graph_stats_endpoint():
+    """Node, relationship and alias counts of the loaded company graph."""
+    try:
+        from knowledge_graph.stats import graph_stats
+
+        return graph_stats()
+    except Exception as e:
+        raise _server_error(e)
+
+
 @app.delete("/delete-document/{file_name}")
 def delete_document_endpoint(file_name: str):
     try:
