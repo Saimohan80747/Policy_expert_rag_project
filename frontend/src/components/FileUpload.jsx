@@ -1,6 +1,28 @@
 import { useState } from "react";
 import { uploadFile } from "../api";
 
+function describeResult(result) {
+  if (result.ingested_files) {
+    const ok = result.ingested_files.length;
+    const dup = result.duplicate_files.length;
+    const bad = result.failed_files.length;
+    return {
+      type: bad ? "warning" : "success",
+      message: `ZIP processed: ${ok} ingested, ${dup} duplicate, ${bad} failed.`,
+    };
+  }
+  if (result.status === "ingested") {
+    return {
+      type: "success",
+      message: `Ingested ${result.file_name} (version ${result.version}, ${result.chunks} chunks).`,
+    };
+  }
+  if (result.status === "duplicate") {
+    return { type: "warning", message: `Already ingested as ${result.duplicate_of}.` };
+  }
+  return { type: "error", message: result.error || "Ingestion failed." };
+}
+
 export default function FileUpload() {
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState(null);
@@ -16,8 +38,8 @@ export default function FileUpload() {
     setStatus(null);
 
     try {
-      await uploadFile(file);
-      setStatus({ type: "success", message: "Document uploaded successfully." });
+      const result = await uploadFile(file);
+      setStatus(describeResult(result));
       setFile(null);
     } catch (err) {
       setStatus({ type: "error", message: err.message });

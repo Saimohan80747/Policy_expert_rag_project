@@ -39,6 +39,7 @@ export default function HomePage() {
         answer: result.answer,
         file_name: result.file_name,
         file_url: result.file_url,
+        sources: result.sources,
       },
     ]);
 

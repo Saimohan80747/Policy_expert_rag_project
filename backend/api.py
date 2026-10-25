@@ -1,280 +1,181 @@
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
-from pydantic import BaseModel,Field
-from fastapi import FastAPI, UploadFile, File, HTTPException,APIRouter
-from  fastapi.middleware.cors import CORSMiddleware
+from ingestion import ingest_file
+from rag import answer_question
+from retrieve_docs import retrieve_documents
+from supabase_.chat.message import get_chat_history
+from supabase_.chat.service import process_chat
+from supabase_.chat.session import delete_session, get_all_sessions, get_session
+from supabase_.delete_documents import delete_document
+from supabase_.file_download import download_file
+from supabase_.file_preview import preview_file
+from zip_file_breaker import zip_file_breaker
 
-from  zip_file_breaker import zip_file_breaker
-from  data_cleaning import clean_text
-from  chunking.text import *
-from  file_reader import extract_text
-from  embeddings import embedding_chunks
-from  pipeline import Pipeline
-from  retrieve_docs import retrieve_documents
-from  chat_cohere import chat_with_cohere
-from  ner import extract_entities
-
-from  supabase_.file_upload import upload_file
-from  supabase_.file_download import download_file
-from  supabase_.file_preview import preview_file
-from  supabase_.chat.session import get_all_sessions,get_session,delete_session
-from  supabase_.chat.message import save_chat,get_chat_history
-from  supabase_.chat.service import process_chat
-from  supabase_.delete_documents  import delete_document
-
-from knowledge_graph.retrive_subgraph_context import graph_answer
-from knowledge_graph.db import create_driver
-
-driver=create_driver()
-
-import spacy
-# nlp = spacy.load("en_core_web_sm")
 app = FastAPI(
-    title="Chunking API",
-    description="API for different text chunking strategies",
-    version="1.0.0"
+    title="Company Docs RAG API",
+    description="Document ingestion, hybrid retrieval and question answering",
+    version="1.2.0",
 )
+
+ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    """Return unexpected errors as JSON *with* CORS headers.
+
+    Starlette runs this outside the CORS middleware, so without the header the browser
+    reports a misleading "blocked by CORS policy" instead of the real error.
+    """
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin in ALLOWED_ORIGINS:
+        headers = {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true"}
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {exc}"},
+        headers=headers,
+    )
+
+
 class PromptRequest(BaseModel):
-    question: str
-    session_id: str
+    question: str = Field(..., min_length=1)
+    session_id: str | None = None
+
 
 class QuestionRequest(BaseModel):
-    question: str = Field(..., min_length=5, example="Which films did Aamir Khan and AR Rahman work on together?")
-    top_k:    int = Field(default=3, ge=1, le=10, description="Number of starting nodes for graph traversal")
-    hops:     int = Field(default=2, ge=1, le=4,  description="Traversal depth from each starting node")
+    question: str = Field(..., min_length=3)
 
 
-class QuestionResponse(BaseModel):
-    question:        str
-    answer:          str
-    retrieved_nodes: list[dict]
-    context_preview: str          # First 500 chars of context, for transparency
+def _server_error(exc):
+    return HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
 
-class CypherRequest(BaseModel):
-    query: str = Field(..., example="MATCH (m:Movie) RETURN m.title LIMIT 5")
-
-def _public_upload_result(result):
-    return {
-        key: value
-        for key, value in result.items()
-        if key not in {"uploaded_file", "file_bytes"}
-    }
-
-@app.post("/ask")
-def ask(req: QuestionRequest):
-    """
-    Answer a natural language question about Bollywood using GraphRAG.
-
-    The pipeline:
-    1. Embed the question and find the top_k most relevant graph nodes
-    2. Traverse each node's neighbourhood up to `hops` relationship steps
-    3. Assemble the subgraph as structured text context
-    4. Call GPT-4o to generate a natural language answer from that context
-    """
-    try:
-        result = graph_answer(
-            driver,req.question,2
-        )
-        data={
-            "query": req.question,
-            "knowledge_context": result,
-        }
-        return chat_with_cohere(data)
-        # return QuestionResponse(
-        #     question=req.question,
-        #     answer=result["answer"],
-        #     retrieved_nodes=result["retrieved_nodes"],
-        #     context_preview=result["context"][:500],
-        # )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/")
+def root():
+    return {"status": "ok", "docs": "/docs"}
 
 
 @app.post("/pipeline")
 def pipeline(file: UploadFile = File(...)):
-    pipeline_runner = Pipeline(steps=[upload_file,extract_text])
-    if(file.filename.endswith('.zip')):
-        return zip_file_breaker(file,pipeline)
-    result = pipeline_runner.run(file)
-    return result
+    """Ingest one document, or every document inside a ZIP."""
+    if (file.filename or "").lower().endswith(".zip"):
+        return zip_file_breaker(file, ingest_file)
+    return ingest_file(file)
+
+
+@app.get("/search")
+def search(q: str, top_k: int = 8, alpha: float = 0.6, current_only: bool = True):
+    """Debug endpoint: hybrid retrieval only (no LLM)."""
+    try:
+        return {"query": q, "results": retrieve_documents(q, top_k, alpha, current_only)}
+    except Exception as e:
+        raise _server_error(e)
+
+
+@app.post("/ask")
+def ask(req: QuestionRequest):
+    """Answer one question without chat history or saving."""
+    try:
+        return answer_question(req.question)
+    except Exception as e:
+        raise _server_error(e)
+
 
 @app.post("/prompt")
 def prompt(request: PromptRequest):
+    """Answer a question inside a chat session (creates the session on the first message)."""
     try:
-            result = graph_answer(
-                driver,request.question,2
-            )
-            data={
-                "query": request.question,
-                "knowledge_context": result,
-            }
-            result = chat_with_cohere(data)
-            # return QuestionResponse(
-            #     question=req.question,
-            #     answer=result["answer"],
-            #     retrieved_nodes=result["retrieved_nodes"],
-            #     context_preview=result["context"][:500],
-            # )
+        history = get_chat_history(request.session_id) if request.session_id else []
+        result = answer_question(request.question, history)
     except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-    # documents = retrieve_documents(request.question)
-    # memory=get_chat_history(request.session_id)
-    # result = chat_with_cohere({
-    #     "query": request.question,
-    #     "documents": documents,
-    #     "memory": memory
-    # })
-    # # pipeline = Pipeline(
-    # #     steps=[
-    # #         retrieve_documents,
-            
-    # #         chat_with_cohere
-    # #     ]
-    # # )
+        raise _server_error(e)
 
-    # result = pipeline.run(request.question)
-    
     session_id = process_chat(
-        session_id=request.session_id,
+        session_id=request.session_id or None,
         question=request.question,
         answer=result["answer"],
-        file_name=result.get("file_name",""),
-        file_url=result.get("file_url",""),
+        file_name=result["file_name"],
+        file_url=result["file_url"],
+        sources=result["sources"],
     )
 
     return {
         "session_id": session_id,
         "answer": result["answer"],
-        "file_name": result.get("file_name",""),
-        "file_url": result.get("file_url",""),
+        "file_name": result["file_name"],
+        "file_url": result["file_url"],
+        "sources": result["sources"],
+        "route": result["route"],
+        "route_used": result["route_used"],
+        "standalone_question": result["standalone_question"],
+        "graph_debug": result.get("graph_debug"),
     }
-# @app.post("/build_graph")
-# def build_graph(request: PromptRequest):
 
 
 @app.get("/history")
 def get_history():
-
-    sessions = get_all_sessions()
-
-    return {
-        "sessions": sessions
-    }
-
+    return {"sessions": get_all_sessions()}
 
 
 @app.get("/history/{session_id}")
 def get_session_by_id(session_id: str):
     session = get_session(session_id)
-
     if not session:
-        return {
-            "error": f"No session found with ID: {session_id}"
-        }
+        return {"error": f"No session found with ID: {session_id}"}
+    return {"session": session}
 
-    return {
-        "session": session
-    }
 
 @app.get("/sessions/{session_id}")
 def get_messages_by_id(session_id: str):
     session = get_chat_history(session_id)
-
     if not session:
-        return {
-            "error": f"No session found with ID: {session_id}"
-        }
-
-    return {
-        "session": session
-    }
+        return {"error": f"No session found with ID: {session_id}"}
+    return {"session": session}
 
 
 @app.delete("/sessions/{session_id}")
 def delete_chat_session(session_id: str):
+    if not delete_session(session_id):
+        return {"status": "error", "message": "Session not found."}
+    return {"status": "success", "message": "Chat session deleted successfully."}
 
-    session = delete_session(session_id)
-
-    if not session:
-        return {
-            "status": "error",
-            "message": "Session not found."
-        }
-
-    return {
-        "status": "success",
-        "message": "Chat session deleted successfully."
-    }
 
 @app.get("/download/{file_name}")
 def download(file_name: str):
     return download_file(file_name)
 
+
 @app.get("/preview/{file_name}")
 def preview(file_name: str):
     return preview_file(file_name)
 
+
+@app.get("/graph/stats")
+def graph_stats_endpoint():
+    """Node, relationship and alias counts of the loaded company graph."""
+    try:
+        from knowledge_graph.stats import graph_stats
+
+        return graph_stats()
+    except Exception as e:
+        raise _server_error(e)
+
+
 @app.delete("/delete-document/{file_name}")
 def delete_document_endpoint(file_name: str):
-    return delete_document(file_name)
-
-
-# @app.post("/pipeline/upload")
-# def pipeline_upload(file: UploadFile = File(...)):
-#     return _public_upload_result(upload_file(file))
-
-
-# @app.post("/pipeline/extract")
-# def pipeline_extract(file: UploadFile = File(...)):
-#     file_bytes = file.file.read()
-#     return extract_text({
-#         "uploaded_file": file,
-#         "file_bytes": file_bytes,
-#         "file_name": file.filename or "",
-#     })
-
-
-# @app.post("/pipeline/clean")
-# def pipeline_clean(payload: dict):
-#     return clean_text(payload)
-
-
-# @app.post("/pipeline/chunk")
-# def pipeline_chunk(payload: dict, chunk_size: int = 2000):
-#     if chunk_size <= 0:
-#         raise HTTPException(status_code=400, detail="chunk_size must be greater than zero")
-#     return recursive_chunks(payload, chunk_size=chunk_size)
-
-
-# @app.post("/pipeline/embed")
-# def pipeline_embed(payload: dict):
-#     return embedding_chunks(payload)
-# @app.get("/extract")
-# def extract(text: str):
-#     doc = nlp(text)
-
-#     entities = set()
-
-#     for ent in doc.ents:
-#         entities.add((ent.text, ent.label_))
-
-#     return {
-#         "entities": [
-#             {"text": text, "label": label}
-#             for text, label in entities
-#         ]
-#     }
-
-# @app.post("/upload_file")
-# def upload(file: UploadFile = File(...)):
-#     return extract_text(file)
+    try:
+        return delete_document(file_name)
+    except Exception as e:
+        raise _server_error(e)

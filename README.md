@@ -1,158 +1,148 @@
-# Policy Expert RAG
+# Company Docs RAG (Lumenstack)
 
-A document-question-answering application with a FastAPI backend and a React/Vite frontend. Upload a supported document, process it into the retrieval pipeline, and ask questions through the chat interface. Chat sessions and source-file actions are backed by Supabase, while the knowledge-graph flow uses Neo4j.
+Question answering over company documents. **Vanilla RAG** answers single-fact and policy questions from document chunks; **graph RAG** answers multi-hop questions (who reports to whom, which clients a person manages, headcounts) from a Neo4j knowledge graph via read-only Text2Cypher. A router picks `vanilla`, `graph` or `hybrid` per question, and answers cite documents `[1]` and graph facts `[G1]`.
 
-## Features
+The test corpus is a synthetic software company, generated separately (`C:\company_corpus`, not part of this repo).
 
-- Upload PDF, DOCX, TXT, CSV, XLSX, and ZIP files
-- Process documents through the backend pipeline
-- Ask questions using retrieved document and knowledge-graph context
-- View and delete previous chat sessions
-- Preview and download source files
-- Expose the backend API through FastAPI's interactive documentation
+## Architecture
 
-## Project structure
-
-```text
-first_rag_project/
-├── backend/
-│   ├── api.py
-│   ├── chunking/
-│   ├── knowledge_graph/
-│   ├── supabase_/
-│   ├── embeddings.py
-│   ├── file_reader.py
-│   ├── pipeline.py
-│   └── retrieve_docs.py
-├── frontend/
-│   ├── src/
-│   ├── index.html
-│   ├── package.json
-│   └── vite.config.js
-├── requirements.txt
-└── README.md
+```
+question ─► analyse (Gemini flash-lite): standalone rewrite · route · entities · asks_individual_pay
+              │
+              ├─ restricted (individual pay) ─► fixed refusal
+              ├─ graph / hybrid ─► link entities ─► Text2Cypher (validated, read-only) ─► Neo4j facts
+              └─ vanilla / hybrid ─► Pinecone hybrid search (dense + sparse, current versions only)
+                                     + chunks mentioning the linked entities (graph)
+                                     ─► RRF fusion ─► optional Cohere rerank ─► top 8
+              ─► Gemini answer with citations
 ```
 
-## Prerequisites
+| Part | Tech |
+| --- | --- |
+| API / UI | FastAPI, React + Vite |
+| Vectors | Pinecone: `llama-text-embed-v2` (dense, 1024-d) + `pinecone-sparse-english-v0` |
+| Files, chats | Supabase (storage bucket `documents`, tables `documents`, `chat_sessions`, `chat_messages`) |
+| Graph | Neo4j Aura Free |
+| LLM | Gemini (`google-genai`) |
+| Rerank (optional) | Cohere trial |
 
-Install the following before setting up the project:
+### Graph layout
 
-- Python 3.10 or newer
-- Node.js 18 or newer and npm
-- A running or hosted Neo4j database
-- Accounts and API credentials for Cohere, Pinecone, and Supabase
+- **Domain:** `(:Entity:<Label> {uid, id, name, ...})` with temporal relationships `[:REL {valid_from, valid_to}]` (current = `valid_to IS NULL`). Loaded from `world/csv` by a deterministic loader, no LLM.
+- **Aliases:** `(:Alias)-[:ALIAS_OF]->(:Entity)` drives entity linking and the gazetteer. Ambiguous aliases are never auto-matched.
+- **Documents:** `(:SourceDoc)-[:HAS_CHUNK]->(:Chunk)-[:NEXT]->(:Chunk)`, `(:Chunk)-[:MENTIONS]->(:Entity)`, `(:SourceDoc)-[:RECORDS]->(:Document)` for ADR/RFC.
+- **Versioning:** the doc id is a hash of the file name; same bytes = duplicate, new bytes under the same name = next version. Older versions are retired (`is_current=false`) in Pinecone and Neo4j.
+
+### Safety
+
+- Text2Cypher accepts one read-only statement; writes, `CALL`, `UNION`, the `Alias`/`GraphMeta` labels and anything touching compensation are rejected.
+- Questions about an individual's pay get a fixed refusal, from documents and from the graph.
+- Document text is treated as untrusted in the answer prompt.
 
 ## Setup
 
-### 1. Clone the repository
-
-```powershell
-git clone https://github.com/Saimohan80747/Policy_expert_rag_project.git
-cd Policy_expert_rag_project
-```
-
-### 2. Create a Python environment
-
-From the repository root, create and activate a virtual environment:
+Requires Python 3.10+, Node 18+, and accounts for Pinecone, Supabase, Neo4j Aura and a Gemini API key (Cohere is optional).
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt -r requirements-dev.txt
+Copy-Item backend\.env.example backend\.env      # then fill in the keys
+cd frontend; npm install
 ```
 
-If PowerShell blocks activation, run the following once for the current user and then activate the environment again:
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-### 3. Install backend dependencies
-
-```powershell
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m spacy download en_core_web_sm
-```
-
-### 4. Configure environment variables
-
-Create `backend\.env` from the example file:
-
-```powershell
-Copy-Item backend\.env.example backend\.env
-```
-
-Open `backend\.env` and provide values for all of the following variables:
+`backend\.env`:
 
 ```dotenv
-COHERE_API_KEY=your_cohere_api_key
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your_supabase_key
-PINECONE_API_KEY=your_pinecone_api_key
-NEO4J_URI=neo4j+s://your-instance.databases.neo4j.io
+PINECONE_API_KEY=
+SUPABASE_URL=
+SUPABASE_KEY=
+GEMINI_API_KEY=
+NEO4J_URI=neo4j+s://<id>.databases.neo4j.io     # use neo4j+ssc:// behind an SSL-intercepting network
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=your_neo4j_password
+NEO4J_PASSWORD=
+COHERE_API_KEY=                                  # optional: enables reranking
 ```
 
-Keep `backend\.env` private. It is ignored by Git. The backend loads this file when it starts, and it verifies the Neo4j connection during startup.
+Optional overrides: `GEMINI_MODEL`, `GEMINI_ANSWER_MODEL`, `GEMINI_CYPHER_MODEL`, `COHERE_RERANK_MODEL` (default `rerank-v3.5`), `RERANK=off`, `PINECONE_INDEX`, `PINECONE_NAMESPACE`. Never commit `.env`.
 
-### 5. Install frontend dependencies
-
-In a new terminal, from the repository root:
+## Run
 
 ```powershell
-cd frontend
-npm install
-```
-
-## Run the application
-
-Use two terminals from the repository root.
-
-### Terminal 1: start the backend
-
-```powershell
+# terminal 1
 .\.venv\Scripts\Activate.ps1
 cd backend
 python -m uvicorn api:app --reload
-```
 
-The API is available at `http://127.0.0.1:8000`. Open `http://127.0.0.1:8000/docs` to view the Swagger UI.
-
-### Terminal 2: start the frontend
-
-```powershell
+# terminal 2
 cd frontend
 npm run dev
 ```
 
-Open the URL printed by Vite, usually `http://localhost:5173`.
+API docs: `http://127.0.0.1:8000/docs`. UI: the URL Vite prints (usually `http://localhost:5173`).
 
-The frontend is configured to call the backend at `http://127.0.0.1:8000`. If the backend runs on a different host or port, update `BASE_URL` in `frontend\src\api.js`.
+### Load the graph (once, and after the corpus's CSVs change)
 
-## API endpoints
+```powershell
+cd backend
+python -m knowledge_graph.loader --csv-dir C:\company_corpus\world\csv --reset --dry-run   # preview
+python -m knowledge_graph.loader --csv-dir C:\company_corpus\world\csv --reset
+```
 
-| Method | Endpoint | Description |
+`--reset` clears the domain graph and the lexical layer, so re-upload documents afterwards.
+
+### Upload documents in bulk
+
+With the API running:
+
+```powershell
+cd backend
+python tools/upload_folder.py C:\company_corpus\corpus\wave_0_initial --sample 40   # try a sample
+python tools/upload_folder.py C:\company_corpus\corpus\wave_0_initial               # everything
+```
+
+Safe to re-run: duplicates are skipped and changed files become new versions. Results are logged to `upload_log.jsonl`. `python tools/cleanup_zip_members.py` previews old-style zip member names; add `--yes` to delete them.
+
+### Hide replaced document versions
+
+The corpus's `_meta` sidecars say which document supersedes which (e.g. Leave Policy v5 replaces v4, which are different files). Flag the replaced ones so search prefers current documents; questions about the past still see them:
+
+```powershell
+python tools/mark_superseded.py C:\company_corpus\corpus          # preview
+python tools/mark_superseded.py C:\company_corpus\corpus --yes    # apply (re-run after new uploads)
+```
+
+Free-tier notes: Pinecone Starter accepts 250K embedding tokens/minute, so uploads are batched by estimated tokens and wait out 429s. A very large spreadsheet can still be too big to embed; leave it out.
+
+### Tests
+
+```powershell
+cd backend
+python -m pytest -q
+```
+
+Tests use fakes for Supabase, Pinecone, Gemini and Neo4j; no keys needed.
+
+## API
+
+| Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `POST` | `/pipeline` | Upload and process a document |
-| `POST` | `/ask` | Ask a knowledge-graph question |
-| `POST` | `/prompt` | Ask a question in a chat session |
-| `GET` | `/history` | List chat sessions |
-| `GET` | `/history/{session_id}` | Get a session |
-| `GET` | `/sessions/{session_id}` | Get messages for a session |
-| `DELETE` | `/sessions/{session_id}` | Delete a chat session |
-| `GET` | `/download/{file_name}` | Download a source file |
-| `GET` | `/preview/{file_name}` | Preview a source file |
-| `DELETE` | `/delete-document/{file_name}` | Delete a source document |
+| `POST` | `/pipeline` | Upload and ingest a file (or zip) |
+| `POST` | `/prompt` | Ask in a chat session; returns answer, `route_used`, `sources` (including the graph item with its Cypher) |
+| `GET` | `/search` | Raw hybrid document search |
+| `GET` | `/graph/stats` | Graph counts, labels, relationship types, document layer |
+| `GET` / `DELETE` | `/history`, `/sessions/{id}` | List, read, delete chats |
+| `GET` | `/download/{file}`, `/preview/{file}` | Source files |
+| `DELETE` | `/delete-document/{file}` | Remove a document from Supabase, Pinecone and Neo4j |
+
+## Status
+
+Built: ingestion with versioning, hybrid vector search, graph loader, alias gazetteer, lexical layer, router, Text2Cypher, entity-anchored retrieval with RRF fusion and optional rerank, UI citations.
+Not yet: ingestion waves 1-6 (html/markdown/pptx/eml/vtt/json/yaml readers, access control by confidentiality), and LLM relation extraction for prose-only relationships.
 
 ## Troubleshooting
 
-- **`Missing Neo4j credentials in .env`**: confirm that `backend\.env` exists and contains `NEO4J_URI`, `NEO4J_USER`, and `NEO4J_PASSWORD`.
-- **Neo4j connectivity errors**: make sure the database is running, the URI is reachable, and the credentials are correct.
-- **Frontend cannot reach the API**: start the backend first and confirm that it is listening on port `8000`.
-- **Missing Python module**: activate `.venv` and run `python -m pip install -r requirements.txt` from the repository root.
-- **Frontend dependency errors**: remove `frontend\node_modules` only if needed, then run `npm install` again.
-
-## Security
-
-Never commit API keys, database passwords, uploaded documents, or other secrets. Use `backend\.env` for local credentials and keep it out of version control.
+- **Browser shows CORS errors:** usually a backend 500; read the uvicorn log.
+- **`CERTIFICATE_VERIFY_FAILED` to Neo4j:** switch the URI scheme to `neo4j+ssc://`.
+- **Graph route falls back to documents:** check the log line starting `Graph route found nothing`; `GET /graph/stats` shows whether the graph is loaded.
+- **Pinecone 429 during upload:** wait; the client retries. Re-running the upload skips what's done.

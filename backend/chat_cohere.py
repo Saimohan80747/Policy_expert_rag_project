@@ -4,10 +4,20 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
-import pprint
-co = cohere.ClientV2(
-    api_key=os.getenv("COHERE_API_KEY")
-)
+
+_co = None
+
+
+def _client():
+    """Create the Cohere client on first use so the API starts without a key."""
+    global _co
+    if _co is None:
+        key = os.getenv("COHERE_API_KEY")
+        if not key:
+            raise RuntimeError("COHERE_API_KEY is not set (backend/.env).")
+        _co = cohere.ClientV2(api_key=key)
+    return _co
+
 
 def chat_with_cohere(json):
     retrieved_documents = json.get("documents", [])
@@ -29,7 +39,7 @@ def chat_with_cohere(json):
     
     question = json.get("query", "")
 
-    response = co.chat(
+    response = _client().chat(
         model="command-a-03-2025",
         messages=[{"role": "user", "content": question}],
         documents=context,

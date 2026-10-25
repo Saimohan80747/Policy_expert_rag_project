@@ -1,11 +1,7 @@
-from pydoc import text
 import re
-import numpy as np
 from langchain_text_splitters import CharacterTextSplitter,RecursiveCharacterTextSplitter,TokenTextSplitter
 
 import time
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
 
 # model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -84,7 +80,7 @@ def sentence_chunks(text, sentences_per_chunk=1):
     return json1
 
 
-def recursive_chunks(json, chunk_size=2000):
+def recursive_chunks(json, chunk_size=2000, chunk_overlap=300):
     chunks = []
     start_time = time.time()
 
@@ -92,12 +88,9 @@ def recursive_chunks(json, chunk_size=2000):
     print(f"Original text length: {len(text)}")
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
-        chunk_overlap=300,
-        separators=[
-            "\n\n",
-            "\n",
-        ]
-        
+        chunk_overlap=chunk_overlap,
+        # fall back to sentences, words, then characters so no chunk exceeds chunk_size
+        separators=["\n\n", "\n", ". ", " ", ""],
     )
     
 

@@ -1,56 +1,100 @@
+import logging
 
-import os
-import time
-from pathlib import Path
-from dotenv import load_dotenv
-from pinecone import Pinecone, ServerlessSpec
+from app_config import PINECONE_NAMESPACE
+from embeddings import embed_dense, embed_sparse, get_index
+from supabase_.supabase_db import supabase_var
 
-load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+logger = logging.getLogger(__name__)
 
 
-
-
-def retrieve_documents(query: str):
-    start = time.time()
-  
-   
-    index_name = "hybrid-index"
-    index = pc.Index(index_name)
-    
-     # Convert the query into a dense vector
-    dense_query_embedding = pc.inference.embed(
-        model="llama-text-embed-v2",
-        inputs=query,
-        parameters={"input_type": "query", "truncate": "END"}
+def hybrid_scale(dense, sparse, alpha):
+    """Weight dense vs sparse (alpha=1 -> dense only, 0 -> sparse only) for dotproduct indexes."""
+    if not 0 <= alpha <= 1:
+        raise ValueError("alpha must be between 0 and 1")
+    return (
+        [v * alpha for v in dense],
+        {"indices": sparse["indices"], "values": [v * (1 - alpha) for v in sparse["values"]]},
     )
 
-    # Convert the query into a sparse vector
-    sparse_query_embedding = pc.inference.embed(
-        model="pinecone-sparse-english-v0",
-        inputs=query,
-        parameters={"input_type": "query", "truncate": "END"}
-    )
-    retrieved_documents = []
-    
-   
 
-    for d, s in zip(dense_query_embedding, sparse_query_embedding):
-        query_response = index.query(
-            namespace="first-namespace",
-            top_k=5,
-            vector=d['values'],
-            sparse_vector={'indices': s['sparse_indices'], 'values': s['sparse_values']},
-            include_values=False,
-            include_metadata=True
+def _drop_superseded(results):
+    """Remove chunks of non-current versions.
+
+    Pinecone applies metadata updates asynchronously, so a just-superseded
+    version can still carry is_current=true for a short while. The documents
+    table is the source of truth and is consistent immediately.
+    """
+    doc_ids = sorted({r["doc_id"] for r in results if r.get("doc_id")})
+    if not doc_ids:
+        return results
+    try:
+        rows = (
+            supabase_var.table("documents")
+            .select("doc_id,version")
+            .in_("doc_id", doc_ids)
+            .eq("is_current", True)
+            .execute()
+            .data
+            or []
         )
-    
-    for match in query_response.matches:
-        retrieved_documents.append({
-            "score": match.score,
-            "text": match.metadata["text"],
-            "file_url": match.metadata.get("file_url", None),
-            "file_name": match.metadata.get("file_name", None)
-        })
-    
-    return retrieved_documents
+    except Exception:  # noqa: BLE001 - never fail a search because of this check
+        logger.exception("Could not verify current versions; returning unfiltered results")
+        return results
+    current = {(row["doc_id"], int(row["version"])) for row in rows}
+    return [r for r in results if (r["doc_id"], r["version"]) in current]
+
+
+def chunk_from_metadata(vec_id, score, meta):
+    version, index = meta.get("version"), meta.get("chunk_index")
+    return {
+        "id": vec_id,
+        "score": score,
+        "text": meta.get("text", ""),
+        "file_name": meta.get("file_name"),
+        "file_url": meta.get("file_url"),
+        "doc_id": meta.get("doc_id"),
+        "version": int(version) if version is not None else None,
+        "chunk_index": int(index) if index is not None else None,
+    }
+
+
+def fetch_chunks(ids):
+    """Fetch specific chunks by id (used for neighbours of a hit). Missing ids are skipped."""
+    if not ids:
+        return []
+    response = get_index().fetch(ids=list(ids), namespace=PINECONE_NAMESPACE)
+    vectors = getattr(response, "vectors", None) or {}
+    return [chunk_from_metadata(vid, 0.0, getattr(v, "metadata", None) or {}) for vid, v in vectors.items()]
+
+
+def _search_filter(current_only, include_superseded):
+    if not current_only:
+        return None
+    current = {"is_current": {"$eq": True}}
+    if include_superseded:
+        return current
+    return {"$and": [current, {"superseded": {"$ne": True}}]}
+
+
+def retrieve_documents(query: str, top_k: int = 8, alpha: float = 0.6, current_only: bool = True,
+                       include_superseded: bool = False):
+    """Hybrid (dense + sparse) search over chunks.
+
+    Only current versions by default, and not documents flagged as replaced by a newer document
+    (tools/mark_superseded.py) unless include_superseded is set.
+    """
+    dense = embed_dense([query], input_type="query")[0]
+    sparse = embed_sparse([query], input_type="query")[0]
+    dense, sparse = hybrid_scale(dense, sparse, alpha)
+
+    response = get_index().query(
+        namespace=PINECONE_NAMESPACE,
+        top_k=top_k,
+        vector=dense,
+        sparse_vector=sparse,
+        include_metadata=True,
+        filter=_search_filter(current_only, include_superseded),
+    )
+
+    results = [chunk_from_metadata(m.id, m.score, m.metadata or {}) for m in response.matches]
+    return _drop_superseded(results) if current_only else results
