@@ -65,3 +65,6 @@ pnpm-debug.log*
 
 .rerank_usage.json
 backend/evaluation/runs/*/llm_cache.jsonl
+# Build output and upload logs
+frontend/dist/
+backend/upload_log.jsonl
