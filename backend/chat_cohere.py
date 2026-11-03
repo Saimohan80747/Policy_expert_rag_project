@@ -1,12 +1,8 @@
 import cohere
-import os
-from pathlib import Path
-from dotenv import load_dotenv
-
-load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
+from config import COHERE_API_KEY, COHERE_MODEL
 import pprint
 co = cohere.ClientV2(
-    api_key=os.getenv("COHERE_API_KEY")
+    api_key=COHERE_API_KEY
 )
 
 def chat_with_cohere(json):
@@ -30,7 +26,7 @@ def chat_with_cohere(json):
     question = json.get("query", "")
 
     response = co.chat(
-        model="command-a-03-2025",
+        model=COHERE_MODEL,
         messages=[{"role": "user", "content": question}],
         documents=context,
     )

@@ -1,6 +1,6 @@
 import fitz  # PyM
 from .supabase_db import supabase_var
-BUCKET = "documents"
+from config import SUPABASE_BUCKET
 import os
 import tempfile
 
@@ -8,7 +8,7 @@ import tempfile
 def preview_file(file_name: str):
     file_bytes = (
         supabase_var.storage
-        .from_(BUCKET)
+        .from_(SUPABASE_BUCKET)
         .download(file_name)
     )
 

@@ -21,8 +21,7 @@ def extract_text(json):
     }
     start = time.time()
     
-    if(json.get("status","")=="duplicate"):
-        return json
+    
     
     uploaded_file = json.get("uploaded_file",None)
     filename = json.get("file_name", "")
@@ -183,10 +182,11 @@ def extract_text(json):
         file_metadata["processing_time"] = round(time.time() - start, 4)
         file_metadata["processed_at"] = datetime.now().isoformat()
 
-        return result.get("text", "No text extracted")
+        return result
 
     except Exception as e:
 
         return {
-            "error": str(e)
+            "error": str(e),
+            "status": "error"
         }

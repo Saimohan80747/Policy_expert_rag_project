@@ -1,20 +1,13 @@
 import cohere
-import os
-from pathlib import Path
-from dotenv import load_dotenv
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_FILE = PROJECT_ROOT / ".env"
-load_dotenv(ENV_FILE)
+from config import COHERE_API_KEY, COHERE_MODEL
 
 
 def _get_client():
-    api_key = os.getenv("COHERE_API_KEY")
-    if not api_key:
+    if not COHERE_API_KEY:
         raise RuntimeError(
             "Missing COHERE_API_KEY. Set it in backend_analyser/.env before generating chat titles."
         )
-    return cohere.ClientV2(api_key=api_key)
+    return cohere.ClientV2(api_key=COHERE_API_KEY)
 
 def generate_title(question, answer):
 
@@ -36,7 +29,7 @@ def generate_title(question, answer):
     co = _get_client()
 
     response = co.chat(
-        model="command-a-03-2025",
+        model=COHERE_MODEL,
         messages=[
             {
                 "role": "user",

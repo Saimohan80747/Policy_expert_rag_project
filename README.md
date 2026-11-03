@@ -24,6 +24,8 @@ first_rag_project/
 │   ├── file_reader.py
 │   ├── pipeline.py
 │   └── retrieve_docs.py
+├── frontend_crud/
+│   └── streamlit_app.py
 ├── frontend/
 │   ├── src/
 │   ├── index.html
@@ -144,6 +146,21 @@ The frontend is configured to call the backend at `http://127.0.0.1:8000`. If th
 | `GET` | `/download/{file_name}` | Download a source file |
 | `GET` | `/preview/{file_name}` | Preview a source file |
 | `DELETE` | `/delete-document/{file_name}` | Delete a source document |
+| `POST` | `/graph/nodes` | Create a node |
+| `POST` | `/graph/relationships` | Create a relationship |
+
+### Graph create frontend
+
+Start the API from `backend`, then run the Streamlit editor from the repository root:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+streamlit run frontend_crud\streamlit_app.py
+```
+
+The frontend defaults to `http://127.0.0.1:8000`; set `GRAPH_API_URL` to use another API URL.
+Node properties are entered as JSON and must include `name`. Relationships use the names of
+existing nodes and the relationship types defined by `loader.py`.
 
 ## Troubleshooting
 

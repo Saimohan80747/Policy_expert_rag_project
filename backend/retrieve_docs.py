@@ -1,12 +1,16 @@
 
-import os
 import time
-from pathlib import Path
-from dotenv import load_dotenv
 from pinecone import Pinecone, ServerlessSpec
+from config import (
+    PINECONE_API_KEY,
+    PINECONE_DENSE_MODEL,
+    PINECONE_NAMESPACE,
+    PINECONE_RETRIEVAL_INDEX,
+    PINECONE_SPARSE_MODEL,
+    RETRIEVAL_TOP_K,
+)
 
-load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+pc = Pinecone(api_key=PINECONE_API_KEY)
 
 
 
@@ -15,19 +19,19 @@ def retrieve_documents(query: str):
     start = time.time()
   
    
-    index_name = "hybrid-index"
+    index_name = PINECONE_RETRIEVAL_INDEX
     index = pc.Index(index_name)
     
      # Convert the query into a dense vector
     dense_query_embedding = pc.inference.embed(
-        model="llama-text-embed-v2",
+        model=PINECONE_DENSE_MODEL,
         inputs=query,
         parameters={"input_type": "query", "truncate": "END"}
     )
 
     # Convert the query into a sparse vector
     sparse_query_embedding = pc.inference.embed(
-        model="pinecone-sparse-english-v0",
+        model=PINECONE_SPARSE_MODEL,
         inputs=query,
         parameters={"input_type": "query", "truncate": "END"}
     )
@@ -37,8 +41,8 @@ def retrieve_documents(query: str):
 
     for d, s in zip(dense_query_embedding, sparse_query_embedding):
         query_response = index.query(
-            namespace="first-namespace",
-            top_k=5,
+            namespace=PINECONE_NAMESPACE,
+            top_k=RETRIEVAL_TOP_K,
             vector=d['values'],
             sparse_vector={'indices': s['sparse_indices'], 'values': s['sparse_values']},
             include_values=False,

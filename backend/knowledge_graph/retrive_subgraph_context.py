@@ -4,14 +4,17 @@
 
 import neo4j
 import ollama
-import os
-from dotenv import load_dotenv
-from pathlib import Path
 from sentence_transformers import SentenceTransformer
+import spacy
+from config import (
+    NEO4J_MAX_HOPS,
+    NEO4J_TOP_K,
+    NEO4J_VECTOR_DIMENSION,
+    NEO4J_VECTOR_INDEX,
+)
+nlp = spacy.load("en_core_web_sm")
+print("✅ spaCy en_core_web_sm loaded.")
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_FILE = PROJECT_ROOT / ".env"
-load_dotenv(ENV_FILE)
 from neo4j import GraphDatabase
 from .db import create_driver
 
@@ -47,23 +50,63 @@ def traverse_graph(driver, start_node_name, max_hops=2):
 
     return result
 
+def find_entities(text):
+    doc = nlp(text)
 
-def find_relevent_nodes(driver, question, top_k=3):
-    question+=" I am  Vikram Singh"
+    entities = []
+    seen = set()
+
+    for ent in doc.ents:
+        name = ent.text.strip().lower()
+
+        if name not in seen:
+            seen.add(name)
+
+            entities.append({
+                "text": name,
+                "label": ent.label_
+            })
+
+    return entities
+def create_embedding_index(driver, index_name=NEO4J_VECTOR_INDEX):
+
+    driver.execute_query(
+        """
+        CREATE VECTOR INDEX $index_name IF NOT EXISTS
+        FOR (n:Embeddable)
+        ON n.embedding
+        OPTIONS {
+            indexConfig: {
+                `vector.dimensions`: NEO4J_VECTOR_DIMENSION,
+                `vector.similarity_function`: 'cosine'
+            }
+        }
+    """,index_name=index_name
+    )
+
+ # Initialize the Neo4j driver when the module is imported
+
+def find_relevent_nodes(driver, question, top_k=NEO4J_TOP_K):
+    
+    entities = find_entities(question)
+
     question_embedding = model.encode(question).tolist()
-
+    if(len(entities)>top_k): 
+        top_k=len(entities)    
     # 1. Retrieve the top-k semantically relevant Intern nodes
     results, _, _ = driver.execute_query(
         """
-        MATCH (emp:Intern)
-        SEARCH emp IN (
-            VECTOR INDEX intern_embedding_index
+       MATCH (node)
+        SEARCH node IN (
+            VECTOR INDEX {NEO4J_VECTOR_INDEX}
             FOR $queryEmbedding
             LIMIT $top_k
-        ) SCORE AS similarityScore
-        RETURN emp.name AS name,
-               emp.description AS description,
-               similarityScore
+        )
+        SCORE AS similarityScore
+
+        RETURN node.name AS name,
+            node.description AS description,
+            similarityScore
         """,
         queryEmbedding=question_embedding,
         top_k=top_k,
@@ -97,8 +140,8 @@ def fetch_nodes_context(set_of_nodes, driver):
     # 4. Build the final context string
     return nodes_context
 
-def graph_answer(driver, question, top_k=3):
-    question+=" I am  Vikram Singh"
+def graph_answer(driver, question, top_k=NEO4J_TOP_K):
+    question+=" I am  Saimohan"
     relavant_nodes_context = find_relevent_nodes(driver, question, top_k)
     relation_context = []
     set_of_nodes = set()
@@ -111,7 +154,7 @@ def graph_answer(driver, question, top_k=3):
 
         set_of_nodes.add(start_name)
 
-        relations = traverse_graph(driver, start_name, max_hops=2)
+        relations = traverse_graph(driver, start_name, max_hops=NEO4J_MAX_HOPS)
 
         for relation in relations:
             data = relation.data()
@@ -133,7 +176,7 @@ def graph_answer(driver, question, top_k=3):
 
     nodes_context = fetch_nodes_context(set_of_nodes, driver)
     context = f"""
-    I am  Vikram Singh
+    I am  Saimohan
     Nodes context:
     {chr(10).join(nodes_context)}
 
@@ -168,11 +211,13 @@ def graph_answer(driver, question, top_k=3):
 
 
 # if __name__ == "__main__":
-    
+    # 
 #     try:
-#         results = retrieve("Who is Siddharth?")
-#         print(type(results))
-#         print(results.__dict__)
+#         db = create_driver()
+#         create_embedding_index(db, index_name='all_nodes_embedding_index')
+#         # results = retrieve("Who is Siddharth?")
+#         # print(type(results))
+#         # print(results.__dict__)
 #         # for item in results:
 #         #     print(item)
 #     finally:

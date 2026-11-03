@@ -1,21 +1,26 @@
-import os
-from pathlib import Path
-from dotenv import load_dotenv
 import uuid
 import time
+from pinecone.grpc import PineconeGRPC as Pinecone
+from pinecone import ServerlessSpec
+from config import (
+    PINECONE_API_KEY,
+    PINECONE_CLOUD,
+    PINECONE_DIMENSION,
+    PINECONE_DENSE_MODEL,
+    PINECONE_NAMESPACE,
+    PINECONE_REGION,
+    PINECONE_SPARSE_MODEL,
+    PINECONE_UPLOAD_INDEX,
+)
 
-from pinecone import Pinecone, ServerlessSpec
-
-load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+pc = Pinecone(api_key=PINECONE_API_KEY)
 
 
 
 def embedding_chunks(json):
-    result=[]
+    hybrid_index_name = PINECONE_UPLOAD_INDEX
     
-    if(json.get("status","")=="duplicate" or json.get("status","")=="failed" or len(json.get("chunks",[]))==0):
-            return json
+    result=[]
 
     start = time.time()
      
@@ -26,42 +31,40 @@ def embedding_chunks(json):
     metadata.setdefault("embedding_model", "")
     metadata.setdefault("embedding_model_type", "")
     metadata.setdefault("processing_time", "")
-    metadata["embedding_model"] = "llama-text-embed-v2"
+    metadata["embedding_model"] = PINECONE_DENSE_MODEL
     metadata["embedding_model_type"] = "HuggingFaceEmbeddings"
-
+    
     chunks = json.get("chunks", [])
 
     documents = []
     ids = []
 
-    
-
-    hybrid_index_name = "hannish-index"
-
     if not pc.has_index(hybrid_index_name):
         pc.create_index(
             name=hybrid_index_name,
             vector_type="dense",
-            dimension=1024,
+            dimension=PINECONE_DIMENSION,
             metric="dotproduct",
             spec=ServerlessSpec(
-                cloud="aws",
-                region="us-east-1"
+                cloud=PINECONE_CLOUD,
+                region=PINECONE_REGION
             )
         )
-   
-    index = pc.Index(hybrid_index_name)
+    index = pc.Index(
+           host=pc.describe_index(hybrid_index_name).host
+       )  
+
     records = []
     # Convert the chunk_text into dense vectors
     dense_embeddings = pc.inference.embed(
-        model="llama-text-embed-v2",
+        model=PINECONE_DENSE_MODEL,
         inputs=chunks,
         parameters={"input_type": "passage", "truncate": "END"}
     )
 
     # Convert the chunk_text into sparse vectors
     sparse_embeddings = pc.inference.embed(
-        model="pinecone-sparse-english-v0",
+        model=PINECONE_SPARSE_MODEL,
         inputs=chunks,
         parameters={"input_type": "passage", "truncate": "END"}
     )
@@ -85,7 +88,7 @@ def embedding_chunks(json):
     # Upsert the records into the index
     index.upsert(
         vectors=records,
-        namespace="first-namespace"
+        namespace=PINECONE_NAMESPACE
     )
 
     
@@ -93,5 +96,3 @@ def embedding_chunks(json):
         time.time() - start, 4)
     
     return json
-
-

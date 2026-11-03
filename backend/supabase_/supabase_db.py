@@ -1,18 +1,9 @@
-import os
-from pathlib import Path
-
 from supabase import create_client
-from dotenv import load_dotenv
+from config import SUPABASE_KEY, SUPABASE_URL
 
-load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
-
-url = os.getenv("SUPABASE_URL")
-key = os.getenv("SUPABASE_KEY")
-
-if not url or not key:
+if not SUPABASE_URL or not SUPABASE_KEY:
 	raise RuntimeError(
 		"Missing SUPABASE_URL or SUPABASE_KEY. Check backend_analyser/.env and how the app is launched."
 	)
 
-supabase_var = create_client(url, key)
-
+supabase_var = create_client(SUPABASE_URL, SUPABASE_KEY)

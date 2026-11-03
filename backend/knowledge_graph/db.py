@@ -1,17 +1,12 @@
 
-import os
-from pathlib import Path
-
-from dotenv import load_dotenv
 from neo4j import GraphDatabase
-
-load_dotenv()
+from config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
 
 
 def create_driver():
-    uri = os.getenv("NEO4J_URI")
-    username = os.getenv("NEO4J_USER")
-    password = os.getenv("NEO4J_PASSWORD")
+    uri = NEO4J_URI
+    username = NEO4J_USER
+    password = NEO4J_PASSWORD
 
     if not all([uri, username, password]):
         raise ValueError("Missing Neo4j credentials in .env")

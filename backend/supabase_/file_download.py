@@ -5,8 +5,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 import pprint
 from .supabase_db import supabase_var
-
-BUCKET = "documents"
+from config import SUPABASE_BUCKET
 
 
 def download_file(file_name: str):
@@ -14,7 +13,7 @@ def download_file(file_name: str):
         # Download bytes from Supabase
         response = (
             supabase_var.storage
-            .from_(BUCKET)
+            .from_(SUPABASE_BUCKET)
             .download(file_name)
         )
         print(type(response))
